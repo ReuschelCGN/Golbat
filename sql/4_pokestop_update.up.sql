@@ -1,7 +1,6 @@
 ALTER TABLE `pokestop`
     ADD COLUMN quest_expiry int unsigned NULL,
-    ADD COLUMN alternative_quest_expiry int unsigned NULL,
-    ADD COLUMN description text;
+    ADD COLUMN alternative_quest_expiry int unsigned NULL;
 
 ALTER TABLE `pokestop` ADD INDEX `ix_quest_expiry` (`quest_expiry`);
 ALTER TABLE `pokestop` ADD INDEX `ix_alternative_quest_expiry` (`alternative_quest_expiry`);
