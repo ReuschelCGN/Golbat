@@ -3,7 +3,7 @@
 -- Table structure for table `gym`
 --
 
-CREATE TABLE `gym` (
+CREATE TABLE IF NOT EXISTS `gym` (
   `id` varchar(35) NOT NULL,
   `lat` double(18,14) NOT NULL,
   `lon` double(18,14) NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE `gym` (
 -- Table structure for table `incident`
 --
 
-CREATE TABLE `incident` (
+CREATE TABLE IF NOT EXISTS `incident` (
   `id` varchar(35) NOT NULL,
   `pokestop_id` varchar(35) NOT NULL,
   `start` int unsigned NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE `invasion_stats` (
 -- Table structure for table `pokemon`
 --
 
-CREATE TABLE `pokemon` (
+CREATE TABLE IF NOT EXISTS `pokemon` (
   `id` varchar(25) NOT NULL,
   `pokestop_id` varchar(35) DEFAULT NULL,
   `spawn_id` bigint unsigned DEFAULT NULL,
@@ -137,7 +137,7 @@ CREATE TABLE `pokemon` (
   KEY `ix_iv` (`iv`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE `pokemon_hundo_stats` (
+CREATE TABLE IF NOT EXISTS `pokemon_hundo_stats` (
   `date` date NOT NULL,
   `pokemon_id` smallint unsigned NOT NULL,
   `count` int NOT NULL,
@@ -148,7 +148,7 @@ CREATE TABLE `pokemon_hundo_stats` (
 -- Table structure for table `pokemon_iv_stats`
 --
 
-CREATE TABLE `pokemon_iv_stats` (
+CREATE TABLE IF NOT EXISTS `pokemon_iv_stats` (
   `date` date NOT NULL,
   `pokemon_id` smallint unsigned NOT NULL,
   `count` int NOT NULL,
@@ -159,7 +159,7 @@ CREATE TABLE `pokemon_iv_stats` (
 -- Table structure for table `pokemon_shiny_stats`
 --
 
-CREATE TABLE `pokemon_shiny_stats` (
+CREATE TABLE IF NOT EXISTS `pokemon_shiny_stats` (
   `date` date NOT NULL,
   `pokemon_id` smallint unsigned NOT NULL,
   `count` int NOT NULL,
@@ -170,7 +170,7 @@ CREATE TABLE `pokemon_shiny_stats` (
 -- Table structure for table `pokemon_stats`
 --
 
-CREATE TABLE `pokemon_stats` (
+CREATE TABLE IF NOT EXISTS `pokemon_stats` (
   `date` date NOT NULL,
   `pokemon_id` smallint unsigned NOT NULL,
   `count` int NOT NULL,
@@ -181,7 +181,7 @@ CREATE TABLE `pokemon_stats` (
 -- Table structure for table `pokestop`
 --
 
-CREATE TABLE `pokestop` (
+CREATE TABLE IF NOT EXISTS `pokestop` (
   `id` varchar(35) NOT NULL,
   `lat` double(18,14) NOT NULL,
   `lon` double(18,14) NOT NULL,
@@ -241,7 +241,7 @@ CREATE TABLE `pokestop` (
 -- Table structure for table `quest_stats`
 --
 
-CREATE TABLE `quest_stats` (
+CREATE TABLE IF NOT EXISTS `quest_stats` (
   `date` date NOT NULL,
   `reward_type` smallint unsigned NOT NULL DEFAULT '0',
   `pokemon_id` smallint unsigned NOT NULL DEFAULT '0',
@@ -254,7 +254,7 @@ CREATE TABLE `quest_stats` (
 -- Table structure for table `raid_stats`
 --
 
-CREATE TABLE `raid_stats` (
+CREATE TABLE IF NOT EXISTS `raid_stats` (
   `date` date NOT NULL,
   `pokemon_id` smallint unsigned NOT NULL,
   `count` int NOT NULL,
@@ -266,7 +266,7 @@ CREATE TABLE `raid_stats` (
 -- Table structure for table `s2cell`
 --
 
-CREATE TABLE `s2cell` (
+CREATE TABLE IF NOT EXISTS `s2cell` (
   `id` bigint unsigned NOT NULL,
   `level` tinyint unsigned DEFAULT NULL,
   `center_lat` double(18,14) NOT NULL DEFAULT '0.00000000000000',
@@ -281,7 +281,7 @@ CREATE TABLE `s2cell` (
 -- Table structure for table `spawnpoint`
 --
 
-CREATE TABLE `spawnpoint` (
+CREATE TABLE IF NOT EXISTS `spawnpoint` (
   `id` bigint unsigned NOT NULL,
   `lat` double(18,14) NOT NULL,
   `lon` double(18,14) NOT NULL,
@@ -298,7 +298,7 @@ CREATE TABLE `spawnpoint` (
 -- Table structure for table `weather`
 --
 
-CREATE TABLE `weather` (
+CREATE TABLE IF NOT EXISTS `weather` (
   `id` bigint NOT NULL,
   `level` tinyint unsigned DEFAULT NULL,
   `latitude` double(18,14) NOT NULL DEFAULT '0.00000000000000',
