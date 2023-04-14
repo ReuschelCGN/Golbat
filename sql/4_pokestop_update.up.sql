@@ -35,7 +35,6 @@ ALTER TABLE `pokestop`
 #   KEY `ix_alternative_quest_reward_type` (`alternative_quest_reward_type`),
 #   KEY `ix_alternative_quest_item_id` (`alternative_quest_item_id`)
 
-
 /* incident expiry time index */
 
 ALTER TABLE `incident` ADD INDEX `ix_expiration` (`expiration`);
