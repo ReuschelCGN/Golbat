@@ -1,11 +1,3 @@
-ALTER TABLE gym
-  MODIFY COLUMN cell_id bigint default NULL;
-
-ALTER TABLE pokemon
-    MODIFY COLUMN cell_id bigint default NULL;
-
-ALTER TABLE pokestop
-    MODIFY COLUMN cell_id bigint default NULL;
 
 alter table pokemon
     drop index `ix_expire_timestamp`;
