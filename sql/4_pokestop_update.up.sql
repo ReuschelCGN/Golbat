@@ -36,11 +36,6 @@ ALTER TABLE `pokestop`
 #   KEY `ix_alternative_quest_item_id` (`alternative_quest_item_id`)
 
 
-/* Description for gym */
-
-ALTER TABLE `gym`
-    ADD COLUMN description text;
-
 /* incident expiry time index */
 
 ALTER TABLE `incident` ADD INDEX `ix_expiration` (`expiration`);
