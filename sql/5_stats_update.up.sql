@@ -1,4 +1,3 @@
-
 alter table pokemon
     drop index `ix_expire_timestamp`;
 
