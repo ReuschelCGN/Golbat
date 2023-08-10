@@ -234,7 +234,7 @@ func main() {
 }
 
 func decode(ctx context.Context, method int, protoData *ProtoData) {
-	if method != int(pogo.ClientAction_CLIENT_ACTION_PROXY_SOCIAL_ACTION) && protoData.Level < 30 {
+	if method != int(pogo.ClientAction_CLIENT_ACTION_PROXY_SOCIAL_ACTION) && protoData.Level < 20 {
 		log.Debugf("Insufficient Level %d Did not process hook type %s", protoData.Level, pogo.Method(method))
 
 		return
@@ -265,10 +265,13 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 		result = decodeGetGymInfo(ctx, protoData.Data)
 		processed = true
 	case pogo.Method_METHOD_ENCOUNTER:
-		if getScanParameters(protoData).ProcessPokemon {
-			result = decodeEncounter(ctx, protoData.Data, protoData.Account)
+		if protoData.Level >= 30 {
+			if getScanParameters(protoData).ProcessPokemon {
+				result = decodeEncounter(ctx, protoData.Data, protoData.Account)
+			}
+			processed = true
 		}
-		processed = true
+		break
 	case pogo.Method_METHOD_DISK_ENCOUNTER:
 		result = decodeDiskEncounter(ctx, protoData.Data)
 		processed = true
