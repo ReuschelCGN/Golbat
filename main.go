@@ -498,6 +498,7 @@ func decodeGetRoutes(payload []byte) string {
 	for _, routeMapCell := range getRoutesOutProto.GetRouteMapCell() {
 		for _, route := range routeMapCell.GetRoute() {
 			if route.RouteSubmissionStatus.Status != pogo.RouteSubmissionStatus_PUBLISHED {
+				log.Warnf("Non published Route found in GetRoutesOutProto, status: %s", route.RouteSubmissionStatus.String())
 				continue
 			}
 			decodeError := decoder.UpdateRouteRecordWithSharedRouteProto(dbDetails, route)
