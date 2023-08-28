@@ -272,8 +272,11 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 		}
 		break
 	case pogo.Method_METHOD_DISK_ENCOUNTER:
-		result = decodeDiskEncounter(ctx, protoData.Data)
-		processed = true
+		if protoData.Level >= 30 {
+			result = decodeDiskEncounter(ctx, protoData.Data)
+			processed = true
+		}
+		break
 	case pogo.Method_METHOD_FORT_SEARCH:
 		result = decodeQuest(ctx, protoData.Data, protoData.HaveAr)
 		processed = true
