@@ -33,14 +33,15 @@ type pokemonTimings struct {
 
 var pokemonCount = make(map[geo.AreaName]*areaPokemonCountDetail)
 
-const maxPokemonNo = 1000
+// max dex id
+const maxPokemonNo = 1050
 
 type areaPokemonCountDetail struct {
-	hundos  [maxPokemonNo]int
-	nundos  [maxPokemonNo]int
-	shiny   [maxPokemonNo]int
-	count   [maxPokemonNo]int
-	ivCount [maxPokemonNo]int
+	hundos  [maxPokemonNo + 1]int
+	nundos  [maxPokemonNo + 1]int
+	shiny   [maxPokemonNo + 1]int
+	count   [maxPokemonNo + 1]int
+	ivCount [maxPokemonNo + 1]int
 }
 
 var pokemonTimingCache *ttlcache.Cache[string, pokemonTimings]
@@ -253,6 +254,9 @@ func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
 				}
 			}
 			if new.Cp.Valid {
+				if new.Shiny.ValueOrZero() {
+					countStats.shiny[new.PokemonId]++
+				}
 				countStats.ivCount[new.PokemonId]++
 				external.PokemonCountIv.WithLabelValues(area.String()).Inc()
 				if new.AtkIv.Valid && new.DefIv.Valid && new.StaIv.Valid {
