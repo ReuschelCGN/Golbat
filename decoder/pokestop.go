@@ -235,11 +235,11 @@ func (stop *Pokestop) updatePokestopFromFort(fortData *pogo.PokemonFortProto, ce
 	return stop
 }
 
-func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOutProto, haveAr bool) {
+func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOutProto, haveAr bool) string {
 
 	if questProto.ChallengeQuest == nil {
 		log.Debugf("Received blank quest")
-		return
+		return "Blank quest"
 	}
 	questData := questProto.ChallengeQuest.Quest
 	questTitle := questProto.ChallengeQuest.QuestDisplay.Title
@@ -505,6 +505,8 @@ func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOu
 		stop.QuestTimestamp = null.IntFrom(questTimestamp)
 		stop.QuestExpiry = questExpiry
 	}
+
+	return questTitle
 }
 
 func (stop *Pokestop) updatePokestopFromFortDetailsProto(fortData *pogo.FortDetailsOutProto) *Pokestop {
@@ -864,14 +866,14 @@ func UpdatePokestopRecordWithFortDetailsOutProto(ctx context.Context, db db.DbDe
 }
 
 func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.FortSearchOutProto, haveAr bool) string {
-	if quest.ChallengeQuest == nil {
-		statsCollector.IncDecodeQuest("error", "no_quest")
-		return "No quest"
-	}
-
 	haveArStr := "NoAR"
 	if haveAr {
 		haveArStr = "AR"
+	}
+
+	if quest.ChallengeQuest == nil {
+		statsCollector.IncDecodeQuest("error", "no_quest")
+		return fmt.Sprintf("%s %s Blank quest", quest.FortId, haveArStr)
 	}
 
 	statsCollector.IncDecodeQuest("ok", haveArStr)
@@ -888,22 +890,22 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 	if pokestop == nil {
 		pokestop = &Pokestop{}
 	}
-	pokestop.updatePokestopFromQuestProto(quest, haveAr)
+	questTitle := pokestop.updatePokestopFromQuestProto(quest, haveAr)
 
 	updatePokestopGetMapFortCache(pokestop)
 	savePokestopRecord(ctx, db, pokestop)
-	return fmt.Sprintf("%s", quest.FortId)
+	return fmt.Sprintf("%s %s %s", quest.FortId, haveArStr, questTitle)
 }
 
 func ClearQuestsWithinGeofence(ctx context.Context, dbDetails db.DbDetails, geofence *geojson.Feature) {
-	res, err := db.RemoveQuests(ctx, dbDetails, geofence)
+	started := time.Now()
+	rows, err := db.RemoveQuests(ctx, dbDetails, geofence)
 	if err != nil {
 		log.Errorf("ClearQuest: Error removing quests: %s", err)
 		return
 	}
 	ClearPokestopCache()
-	rows, _ := res.RowsAffected()
-	log.Infof("ClearQuest: Removed quests from %d pokestops", rows)
+	log.Infof("ClearQuest: Removed quests from %d pokestops in %s", rows, time.Since(started))
 }
 
 func GetQuestStatusWithGeofence(dbDetails db.DbDetails, geofence *geojson.Feature) db.QuestStatus {
