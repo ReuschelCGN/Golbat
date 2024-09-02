@@ -14,6 +14,7 @@ type ScanParameters struct {
 	ProcessPokestops bool
 	ProcessGyms      bool
 	ProcessCells     bool
+	ProcessStations  bool
 }
 
 func FindScanConfiguration(scanContext string, lat, lon float64) ScanParameters {
