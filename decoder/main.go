@@ -319,7 +319,7 @@ func UpdateStationBatch(ctx context.Context, db db.DbDetails, scanParameters Sca
 		if station == nil {
 			station = &Station{}
 		}
-		station.updateFromStationProto(stationProto.Data)
+		station.updateFromStationProto(stationProto.Data, stationProto.Cell)
 		saveStationRecord(ctx, db, station)
 		stationMutex.Unlock()
 	}
