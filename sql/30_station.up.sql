@@ -1,4 +1,4 @@
-CREATE TABLE Station (
+CREATE TABLE `station` (
  `id`                       VARCHAR(35) NOT NULL,
  `lat`                      DOUBLE(18,14) NOT NULL,
  `lon`                      DOUBLE(18,14) NOT NULL,
@@ -16,10 +16,12 @@ CREATE TABLE Station (
  `battle_pokemon_gender`    tinyint unsigned,
  `battle_pokemon_alignment` smallint unsigned,
  `updated`                  INT UNSIGNED NOT NULL,
- PRIMARY KEY(`id`)
+ PRIMARY KEY(`id`),
  KEY `ix_coords` (`lat`,`lon`),
  KEY `ix_end_time` (`end_time`),
  KEY `ix_updated` (`updated`),
  KEY `ix_battle_pokemon_id` (`battle_pokemon_id`),
  KEY `fk_station_cell_id` (`cell_id`)
-);
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci;
