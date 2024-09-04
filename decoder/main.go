@@ -107,6 +107,11 @@ func initDataCache() {
 	)
 	go gymCache.Start()
 
+	stationCache = ttlcache.New[string, Station](
+		ttlcache.WithTTL[string, Station](60 * time.Minute),
+	)
+	go stationCache.Start()
+
 	weatherCache = ttlcache.New[int64, Weather](
 		ttlcache.WithTTL[int64, Weather](60 * time.Minute),
 	)
