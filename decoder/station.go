@@ -143,8 +143,8 @@ func (station *Station) updateFromStationProto(stationProto *pogo.StationProto, 
 	station.Name = stationProto.Name
 	station.Lat = stationProto.Lat
 	station.Lon = stationProto.Lng
-	station.StartTime = stationProto.StartTimeMs
-	station.EndTime = stationProto.EndTimeMs
+	station.StartTime = stationProto.StartTimeMs / 1000
+	station.EndTime = stationProto.EndTimeMs / 1000
 	station.CooldownComplete = stationProto.CooldownCompleteMs
 	station.IsBattleAvailable = stationProto.IsBreadBattleAvailable
 	if battleDetails := stationProto.BattleDetails; battleDetails != nil {
