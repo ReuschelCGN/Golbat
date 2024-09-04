@@ -3,7 +3,7 @@ CREATE TABLE `station` (
  `lat`                      DOUBLE(18,14) NOT NULL,
  `lon`                      DOUBLE(18,14) NOT NULL,
  `name`                     VARCHAR(128) NOT NULL,
- `cell_id`                  BIGINT UNSIGNED NOT NULL,
+ `cell_id`                  BIGINT NOT NULL,
  `start_time`               INT UNSIGNED NOT NULL,
  `end_time`                 INT UNSIGNED NOT NULL,
  `cooldown_complete`        INT UNSIGNED NOT NULL,
