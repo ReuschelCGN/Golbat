@@ -35,31 +35,32 @@ import (
 //
 // FirstSeenTimestamp: This field is used in IsNewRecord. It should only be set in savePokemonRecord.
 type Pokemon struct {
-	Id                      string      `db:"id" json:"id"`
-	PokestopId              null.String `db:"pokestop_id" json:"pokestop_id"`
-	SpawnId                 null.Int    `db:"spawn_id" json:"spawn_id"`
-	Lat                     float64     `db:"lat" json:"lat"`
-	Lon                     float64     `db:"lon" json:"lon"`
-	Weight                  null.Float  `db:"weight" json:"weight"`
-	Size                    null.Int    `db:"size" json:"size"`
-	Height                  null.Float  `db:"height" json:"height"`
-	ExpireTimestamp         null.Int    `db:"expire_timestamp" json:"expire_timestamp"`
-	Updated                 null.Int    `db:"updated" json:"updated"`
-	PokemonId               int16       `db:"pokemon_id" json:"pokemon_id"`
-	Move1                   null.Int    `db:"move_1" json:"move_1"`
-	Move2                   null.Int    `db:"move_2" json:"move_2"`
-	Gender                  null.Int    `db:"gender" json:"gender"`
-	Cp                      null.Int    `db:"cp" json:"cp"`
-	AtkIv                   null.Int    `db:"atk_iv" json:"atk_iv"`
-	DefIv                   null.Int    `db:"def_iv" json:"def_iv"`
-	StaIv                   null.Int    `db:"sta_iv" json:"sta_iv"`
-	IvInactive              null.Int    `db:"iv_inactive" json:"iv_inactive"`
-	Iv                      null.Float  `db:"iv" json:"iv"`
-	Form                    null.Int    `db:"form" json:"form"`
-	Level                   null.Int    `db:"level" json:"level"`
-	EncounterWeather        uint8       `db:"encounter_weather" json:"encounter_weather"`
-	Weather                 null.Int    `db:"weather" json:"weather"`
-	Costume                 null.Int    `db:"costume" json:"costume"`
+	Id               string      `db:"id" json:"id"`
+	PokestopId       null.String `db:"pokestop_id" json:"pokestop_id"`
+	SpawnId          null.Int    `db:"spawn_id" json:"spawn_id"`
+	Lat              float64     `db:"lat" json:"lat"`
+	Lon              float64     `db:"lon" json:"lon"`
+	Weight           null.Float  `db:"weight" json:"weight"`
+	Size             null.Int    `db:"size" json:"size"`
+	Height           null.Float  `db:"height" json:"height"`
+	ExpireTimestamp  null.Int    `db:"expire_timestamp" json:"expire_timestamp"`
+	Updated          null.Int    `db:"updated" json:"updated"`
+	PokemonId        int16       `db:"pokemon_id" json:"pokemon_id"`
+	Move1            null.Int    `db:"move_1" json:"move_1"`
+	Move2            null.Int    `db:"move_2" json:"move_2"`
+	Gender           null.Int    `db:"gender" json:"gender"`
+	Cp               null.Int    `db:"cp" json:"cp"`
+	AtkIv            null.Int    `db:"atk_iv" json:"atk_iv"`
+	DefIv            null.Int    `db:"def_iv" json:"def_iv"`
+	StaIv            null.Int    `db:"sta_iv" json:"sta_iv"`
+	IvInactive       null.Int    `db:"iv_inactive" json:"iv_inactive"`
+	Iv               null.Float  `db:"iv" json:"iv"`
+	Form             null.Int    `db:"form" json:"form"`
+	Level            null.Int    `db:"level" json:"level"`
+	EncounterWeather uint8       `db:"encounter_weather" json:"encounter_weather"`
+	Weather          null.Int    `db:"weather" json:"weather"`
+	Costume          null.Int    `db:"costume" json:"costume"`
+	//BreadMode               null.Int    `db:"bread_mode" json:"bread_mode"`
 	FirstSeenTimestamp      int64       `db:"first_seen_timestamp" json:"first_seen_timestamp"`
 	Changed                 int64       `db:"changed" json:"changed"`
 	CellId                  null.Int    `db:"cell_id" json:"cell_id"`
@@ -709,6 +710,11 @@ func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails
 	pokemon.Weight = null.FloatFrom(float64(proto.WeightKg))
 	oldWeather := pokemon.EncounterWeather
 	pokemon.EncounterWeather = uint8(proto.PokemonDisplay.WeatherBoostedCondition)
+
+	if proto.DeployedStationId != "" {
+		log.Infof("Found Dynamax in encounter: %s", proto.DeployedStationId)
+	}
+
 	isUnboostedPartlyCloudy := false
 	if proto.PokemonDisplay.WeatherBoostedCondition == pogo.GameplayWeatherProto_NONE {
 		weather, err := findWeatherRecordByLatLon(ctx, db, pokemon.Lat, pokemon.Lon)
@@ -998,6 +1004,10 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 	pokemon.Gender = null.IntFrom(int64(display.Gender))
 	pokemon.Form = null.IntFrom(int64(display.Form))
 	pokemon.Costume = null.IntFrom(int64(display.Costume))
+	if breadMode := display.BreadModeEnum; breadMode != pogo.BreadModeEnum_NONE {
+		log.Infof("Found Dynamax mon: %v", display)
+	}
+	//pokemon.BreadMode = null.IntFrom(int64(display.BreadModeEnum))
 	return pokemon.setWeather(int64(display.WeatherBoostedCondition))
 }
 

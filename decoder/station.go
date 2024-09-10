@@ -34,6 +34,7 @@ type Station struct {
 	BattlePokemonCostume   null.Int `db:"battle_pokemon_costume"`
 	BattlePokemonGender    null.Int `db:"battle_pokemon_gender"`
 	BattlePokemonAlignment null.Int `db:"battle_pokemon_alignment"`
+	//BattlePokemonBreadMode null.Int `db:"battle_pokemon_bread_mode"`
 
 	TotalStationedPokemon null.Int    `db:"total_stationed_pokemon"`
 	StationedPokemon      null.String `db:"stationed_pokemon"`
@@ -141,6 +142,7 @@ func hasChangesStation(old *Station, new *Station) bool {
 		old.BattlePokemonCostume != new.BattlePokemonCostume ||
 		old.BattlePokemonGender != new.BattlePokemonGender ||
 		old.BattlePokemonAlignment != new.BattlePokemonAlignment ||
+		//old.BattlePokemonBreadMode != new.BattlePokemonBreadMode ||
 		!floatAlmostEqual(old.Lat, new.Lat, floatTolerance) ||
 		!floatAlmostEqual(old.Lon, new.Lon, floatTolerance)
 }
@@ -162,6 +164,7 @@ func (station *Station) updateFromStationProto(stationProto *pogo.StationProto, 
 			station.BattlePokemonCostume = null.IntFrom(int64(pokemon.PokemonDisplay.Costume))
 			station.BattlePokemonGender = null.IntFrom(int64(pokemon.PokemonDisplay.Gender))
 			station.BattlePokemonAlignment = null.IntFrom(int64(pokemon.PokemonDisplay.Alignment))
+			//station.BattlePokemonBreadMode = null.IntFrom(int64(pokemon.PokemonDisplay.BreadModeEnum))
 		}
 	}
 	station.CellId = int64(cellId)
