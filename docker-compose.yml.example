@@ -1,7 +1,7 @@
 version: '3.7'
 services:
   golbat:
-    image: ghcr.io/unownhash/golbat:main
+    image: ghcr.io/unownhash/golbat:dynamax
     container_name: golbat
     restart: unless-stopped
     ports:
