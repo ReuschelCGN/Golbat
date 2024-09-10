@@ -134,6 +134,7 @@ func hasChangesStation(old *Station, new *Station) bool {
 		old.Name != new.Name ||
 		old.StartTime != new.StartTime ||
 		old.EndTime != new.EndTime ||
+		old.StationedPokemon != new.StationedPokemon ||
 		old.CooldownComplete != new.CooldownComplete ||
 		old.IsBattleAvailable != new.IsBattleAvailable ||
 		old.BattleLevel != new.BattleLevel ||
