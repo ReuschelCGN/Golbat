@@ -812,7 +812,7 @@ func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails
 	// There are 10 total possible transitions among these states, i.e. all 12 of them except for 0P <-> PP.
 	// A Ditto in 00/PP state is undetectable. We try to detect them in the remaining possibilities.
 	// Now we try to detect all 10 possible conditions where we could identify Ditto with certainty
-	if pokemon.Level.Valid {
+	if !proto.PokemonDisplay.IsStrongPokemon && pokemon.Level.Valid {
 		switch level - pokemon.Level.Int64 {
 		case 0:
 		// the Pokemon has been encountered before but we find an unexpected level when reencountering it => Ditto
@@ -920,14 +920,15 @@ func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails
 		}
 	}
 	if pokemon.Weather.Int64 != int64(pogo.GameplayWeatherProto_NONE) {
-		if level <= 5 || proto.IndividualAttack < 4 || proto.IndividualDefense < 4 || proto.IndividualStamina < 4 {
+		if !proto.PokemonDisplay.IsStrongPokemon &&
+			(level <= 5 || proto.IndividualAttack < 4 || proto.IndividualDefense < 4 || proto.IndividualStamina < 4) {
 			setDittoAttributes("B0", false, false, true)
 		} else {
 			pokemon.Level = null.IntFrom(level)
 			pokemon.calculateIv(int64(proto.IndividualAttack), int64(proto.IndividualDefense),
 				int64(proto.IndividualStamina))
 		}
-	} else if level > 30 && level <= 35 {
+	} else if !proto.PokemonDisplay.IsStrongPokemon && level > 30 && level <= 35 {
 		setDittoAttributes("0P", true, false, true)
 	} else {
 		pokemon.Level = null.IntFrom(level)
@@ -980,15 +981,13 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 			pokemon.Move2 = null.NewInt(0, false)
 			pokemon.Cp = null.NewInt(0, false)
 			pokemon.Shiny = null.NewBool(false, false)
-			if pokemon.IsDitto {
-				if pokemon.Weather.Int64 != int64(pogo.GameplayWeatherProto_NONE) &&
-					pokemon.Weather.Int64 != int64(pogo.GameplayWeatherProto_PARTLY_CLOUDY) {
-					// reset weather for B0 state Ditto
-					pokemon.Weather = null.IntFrom(int64(pogo.GameplayWeatherProto_NONE))
-				}
-				pokemon.IsDitto = false
-			}
-			pokemon.EncounterWeather |= EncounterWeather_Rerolled
+			pokemon.IsDitto = false
+			pokemon.AtkIv = null.NewInt(0, false)
+			pokemon.DefIv = null.NewInt(0, false)
+			pokemon.StaIv = null.NewInt(0, false)
+			pokemon.Iv = null.NewFloat(0, false)
+			pokemon.Level = null.NewInt(0, false)
+			pokemon.EncounterWeather = EncounterWeather_Invalid
 			pokemon.DisplayPokemonId = null.NewInt(0, false)
 			pokemon.Pvp = null.NewString("", false)
 		}
