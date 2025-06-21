@@ -406,7 +406,7 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 		result = decodeQuest(ctx, protoData.Data, protoData.HaveAr)
 		processed = true
 	case pogo.Method_METHOD_GET_PLAYER:
-		ignore = true
+		processed = true
 	case pogo.Method_METHOD_GET_HOLOHOLO_INVENTORY:
 		ignore = true
 	case pogo.Method_METHOD_CREATE_COMBAT_CHALLENGE:
