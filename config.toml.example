@@ -46,7 +46,7 @@ include_hundos_under_cap = false
 [[webhooks]]
 url = "http://localhost:4201"
 # types if specified can be...
-# types = ["pokemon", "pokemon_iv", "pokemon_no_iv", "gym", "invasion", "quest", "pokestop", "raid", "weather", "fort_update"]
+# types = ["pokemon", "pokemon_iv", "pokemon_no_iv", "gym", "invasion", "quest", "pokestop", "raid", "weather", "fort_update", "max_battle"]
 # "pokemon" includes both with ivs and without. "pokemon_iv" will only be encountered pokemon. "pokemon_no_iv" may be nearby pokemon that have not been encountered (yet).
 
 #[[webhooks]]
@@ -64,3 +64,7 @@ max_pokemon_distance = 100  # Maximum distance in kilometers for searching pokem
 max_pokemon_results = 3000  # Maximum number of pokemon to return
 extended_timeout = false
 profile_routes = false
+
+[weather]
+proactive_iv_switching = true       # Enable proactive IV switching upon weather changes (default: true)
+proactive_iv_switching_to_db = false # Write proactive IV changes to database (default: false)
