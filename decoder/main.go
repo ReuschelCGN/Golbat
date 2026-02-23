@@ -63,6 +63,7 @@ var gymCache *ttlcache.Cache[string, Gym]
 var stationCache *ttlcache.Cache[string, Station]
 var tappableCache *ttlcache.Cache[uint64, Tappable]
 var weatherCache *ttlcache.Cache[int64, Weather]
+var weatherConsensusCache *ttlcache.Cache[int64, *WeatherConsensusState]
 var s2CellCache *ttlcache.Cache[uint64, S2Cell]
 var spawnpointCache *ttlcache.Cache[int64, Spawnpoint]
 var pokemonCache []*ttlcache.Cache[uint64, Pokemon]
@@ -142,6 +143,11 @@ func initDataCache() {
 	)
 	go weatherCache.Start()
 
+	weatherConsensusCache = ttlcache.New[int64, *WeatherConsensusState](
+		ttlcache.WithTTL[int64, *WeatherConsensusState](2 * time.Hour),
+	)
+	go weatherConsensusCache.Start()
+
 	s2CellCache = ttlcache.New[uint64, S2Cell](
 		ttlcache.WithTTL[uint64, S2Cell](60 * time.Minute),
 	)
@@ -216,7 +222,7 @@ func InitialiseOhbem() {
 		}
 
 		gohbemLogger := &gohbemLogger{}
-		cacheFileLocation := "cache/master-latest-basics.json"
+		cacheFileLocation := masterFileCachePath
 		o := &gohbem.Ohbem{Leagues: leagues, LevelCaps: config.Config.Pvp.LevelCaps,
 			IncludeHundosUnderCap: config.Config.Pvp.IncludeHundosUnderCap,
 			MasterFileCachePath:   cacheFileLocation, Logger: gohbemLogger}
@@ -229,22 +235,32 @@ func InitialiseOhbem() {
 			o.RankingComparator = gohbem.RankingComparatorDefault
 		}
 
-		if err := o.FetchPokemonData(); err != nil {
-			if err2 := o.LoadPokemonData(cacheFileLocation); err2 != nil {
-				_ = o.LoadPokemonData("pogo/master-latest-basics.json")
-				log.Errorf("ohbem.FetchPokemonData failed. ohbem.LoadPokemonData from cache failed: %s. Loading from pogo/master-latest-basics.json instead.", err2)
-			} else {
-				log.Warnf("ohbem.FetchPokemonData failed, loaded from cache: %s", err)
+		if err := o.LoadPokemonData(cacheFileLocation); err != nil {
+			log.Warnf("ohbem.LoadPokemonData from cache failed: %v", err)
+			if errFetch := o.FetchPokemonData(); errFetch != nil {
+				log.Warnf("ohbem.FetchPokemonData failed: %v", errFetch)
+				if errFallback := o.LoadPokemonData("pogo/master-latest-basics.json"); errFallback != nil {
+					log.Errorf("ohbem.LoadPokemonData from fallback failed: %v", errFallback)
+					return
+				}
+				log.Warnf("ohbem.LoadPokemonData loaded from pogo/master-latest-basics.json instead.")
+			} else if errSave := o.SavePokemonData(cacheFileLocation); errSave != nil {
+				log.Warnf("ohbem.SavePokemonData to cache failed: %v", errSave)
 			}
 		}
 
-		if o.PokemonData.Initialized == true {
-			_ = o.SavePokemonData(cacheFileLocation)
-		}
-
-		_ = o.WatchPokemonData()
-
 		ohbem = o
+	}
+}
+
+func reloadOhbemFromMasterFile() {
+	if ohbem == nil {
+		return
+	}
+	if err := ohbem.LoadPokemonData(masterFileCachePath); err != nil {
+		log.Warnf("ohbem reload from MasterFile failed: %v", err)
+	} else {
+		log.Infof("ohbem reloaded from MasterFile cache")
 	}
 }
 
@@ -301,7 +317,7 @@ func UpdateFortBatch(ctx context.Context, db db.DbDetails, scanParameters ScanPa
 			if isNewPokestop {
 				gym, _ := GetGymRecord(ctx, db, fortId)
 				if gym != nil {
-					copySharedFieldsFromGym(pokestop, gym)
+					pokestop.copySharedFieldsFrom(gym)
 				}
 			}
 
@@ -359,7 +375,7 @@ func UpdateFortBatch(ctx context.Context, db db.DbDetails, scanParameters ScanPa
 			if isNewGym {
 				pokestop, _ := GetPokestopRecord(ctx, db, fortId)
 				if pokestop != nil {
-					copySharedFieldsFromPokestop(gym, pokestop)
+					gym.copySharedFieldsFrom(pokestop)
 				}
 			}
 
@@ -477,29 +493,39 @@ func UpdatePokemonBatch(ctx context.Context, db db.DbDetails, scanParameters Sca
 	}
 }
 
-func UpdateClientWeatherBatch(ctx context.Context, db db.DbDetails, p []*pogo.ClientWeatherProto, timestampMs int64) (updates []WeatherUpdate) {
+func UpdateClientWeatherBatch(ctx context.Context, db db.DbDetails, p []*pogo.ClientWeatherProto, timestampMs int64, account string) (updates []WeatherUpdate) {
+	hourKey := timestampMs / time.Hour.Milliseconds()
 	for _, weatherProto := range p {
 		weatherMutex, _ := weatherStripedMutex.GetLock(uint64(weatherProto.S2CellId))
 		weatherMutex.Lock()
+
 		weather, err := getWeatherRecord(ctx, db, weatherProto.S2CellId)
 		if err != nil {
 			log.Printf("getWeatherRecord: %s", err)
-		} else {
-			if weather == nil {
-				weather = &Weather{}
-			}
-			if timestampMs >= weather.UpdatedMs {
-				weather.UpdatedMs = timestampMs
-				oldWeather := weather.updateWeatherFromClientWeatherProto(weatherProto)
-				saveWeatherRecord(ctx, db, weather)
-				if oldWeather != weather.GameplayCondition {
-					updates = append(updates, WeatherUpdate{
-						S2CellId:   weatherProto.S2CellId,
-						NewWeather: int32(weatherProto.GameplayWeather.GameplayCondition),
-					})
+		} else if weather == nil || timestampMs >= weather.UpdatedMs {
+			state := getWeatherConsensusState(weatherProto.S2CellId, hourKey)
+			if state != nil {
+				publish, publishProto := state.applyObservation(hourKey, account, weatherProto)
+				if publish {
+					if publishProto == nil {
+						publishProto = weatherProto
+					}
+					if weather == nil {
+						weather = &Weather{}
+					}
+					weather.UpdatedMs = timestampMs
+					oldWeather := weather.updateWeatherFromClientWeatherProto(publishProto)
+					saveWeatherRecord(ctx, db, weather)
+					if oldWeather != weather.GameplayCondition {
+						updates = append(updates, WeatherUpdate{
+							S2CellId:   publishProto.S2CellId,
+							NewWeather: int32(publishProto.GetGameplayWeather().GetGameplayCondition()),
+						})
+					}
 				}
 			}
 		}
+
 		weatherMutex.Unlock()
 	}
 	return updates

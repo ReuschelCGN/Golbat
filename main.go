@@ -190,24 +190,25 @@ func main() {
 		go db2.PromLiveStatsUpdater(dbDetails, cfg.Prometheus.LiveStatsSleep)
 	}
 
-	decoder.InitialiseOhbem()
+	needsOhbem := cfg.Pvp.Enabled
+	needsMasterfile := needsOhbem || cfg.Weather.ProactiveIVSwitching
+	if needsMasterfile {
+		if err := decoder.EnsureMasterFileData(); err != nil {
+			log.Fatalf("Unable to initialise MasterFile: %v", err)
+		}
+	}
+
+	if needsOhbem {
+		decoder.InitialiseOhbem()
+	}
 	if cfg.Weather.ProactiveIVSwitching {
 		decoder.InitProactiveIVSwitchSem()
+	}
 
-		// Try to fetch from remote first, fallback to cache, then fallback to bundled file
-		if err := decoder.FetchMasterFileData(); err != nil {
-			if err2 := decoder.LoadMasterFileData(""); err2 != nil {
-				_ = decoder.LoadMasterFileData("pogo/master-latest-rdm.json")
-				log.Errorf("Weather MasterFile fetch failed. Loading from cache failed: %s. Loading from pogo/master-latest-rdm.json instead.", err2)
-			} else {
-				log.Warnf("Weather MasterFile fetch failed, loaded from cache: %s", err)
-			}
-		} else {
-			// Save to cache if successfully fetched
-			_ = decoder.SaveMasterFileData()
+	if needsMasterfile {
+		if err := decoder.WatchMasterFileData(); err != nil {
+			log.Warnf("MasterFile watcher failed: %v", err)
 		}
-
-		_ = decoder.WatchMasterFileData()
 	}
 	decoder.LoadStatsGeofences()
 	InitDeviceCache()
@@ -860,24 +861,26 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 	var cellsToBeCleaned []uint64
 
 	// track forts per cell for memory-based cleanup (only if tracker enabled)
-	cellForts := make(map[uint64]*decoder.CellFortsData)
+	cellForts := make(map[uint64]*decoder.FortTrackerGMOContents)
 
 	if len(decodedGmo.MapCell) == 0 {
 		return "Skipping GetMapObjectsOutProto: No map cells found"
 	}
 	for _, mapCell := range decodedGmo.MapCell {
+		// initialize cell forts tracking for every map cell (so empty fort lists are seen as "no forts")
+		cellForts[mapCell.S2CellId] = &decoder.FortTrackerGMOContents{
+			Pokestops: make([]string, 0),
+			Gyms:      make([]string, 0),
+			Timestamp: mapCell.AsOfTimeMs,
+		}
+		// always mark this mapCell to be checked for removed forts. Previously only cells with forts were
+		// added which meant an empty fort list (all forts removed) was never passed to the tracker.
+		cellsToBeCleaned = append(cellsToBeCleaned, mapCell.S2CellId)
+
 		if isCellNotEmpty(mapCell) {
 			newMapCells = append(newMapCells, mapCell.S2CellId)
-			if cellContainsForts(mapCell) {
-				cellsToBeCleaned = append(cellsToBeCleaned, mapCell.S2CellId)
-				// initialize cell forts tracking (only if tracker enabled)
-				cellForts[mapCell.S2CellId] = &decoder.CellFortsData{
-					Pokestops: make([]string, 0),
-					Gyms:      make([]string, 0),
-					Timestamp: mapCell.AsOfTimeMs,
-				}
-			}
 		}
+
 		for _, fort := range mapCell.Fort {
 			newForts = append(newForts, decoder.RawFortData{Cell: mapCell.S2CellId, Data: fort, Timestamp: mapCell.AsOfTimeMs})
 
@@ -911,7 +914,7 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 	}
 	var weatherUpdates []decoder.WeatherUpdate
 	if scanParameters.ProcessWeather {
-		weatherUpdates = decoder.UpdateClientWeatherBatch(ctx, dbDetails, decodedGmo.ClientWeather, decodedGmo.MapCell[0].AsOfTimeMs)
+		weatherUpdates = decoder.UpdateClientWeatherBatch(ctx, dbDetails, decodedGmo.ClientWeather, decodedGmo.MapCell[0].AsOfTimeMs, protoData.Account)
 	}
 	if scanParameters.ProcessPokemon {
 		decoder.UpdatePokemonBatch(ctx, dbDetails, scanParameters, newWildPokemon, newNearbyPokemon, newMapPokemon, decodedGmo.ClientWeather, protoData.Account)
