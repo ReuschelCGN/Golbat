@@ -27,10 +27,10 @@ func loadIncidentFromDatabase(ctx context.Context, db db.DbDetails, incidentId s
 
 // peekIncidentRecord - cache-only lookup, no DB fallback, returns locked.
 // Caller MUST call returned unlock function if non-nil.
-func peekIncidentRecord(incidentId string) (*Incident, func(), error) {
+func peekIncidentRecord(incidentId string, caller string) (*Incident, func(), error) {
 	if item := incidentCache.Get(incidentId); item != nil {
 		incident := item.Value()
-		incident.Lock()
+		incident.Lock(caller)
 		return incident, func() { incident.Unlock() }, nil
 	}
 	return nil, nil, nil
@@ -39,11 +39,11 @@ func peekIncidentRecord(incidentId string) (*Incident, func(), error) {
 // getIncidentRecordReadOnly acquires lock but does NOT take snapshot.
 // Use for read-only checks. Will cause a backing database lookup.
 // Caller MUST call returned unlock function if non-nil.
-func getIncidentRecordReadOnly(ctx context.Context, db db.DbDetails, incidentId string) (*Incident, func(), error) {
+func getIncidentRecordReadOnly(ctx context.Context, db db.DbDetails, incidentId string, caller string) (*Incident, func(), error) {
 	// Check cache first
 	if item := incidentCache.Get(incidentId); item != nil {
 		incident := item.Value()
-		incident.Lock()
+		incident.Lock(caller)
 		return incident, func() { incident.Unlock() }, nil
 	}
 
@@ -67,14 +67,14 @@ func getIncidentRecordReadOnly(ctx context.Context, db db.DbDetails, incidentId 
 	})
 
 	incident := existingIncident.Value()
-	incident.Lock()
+	incident.Lock(caller)
 	return incident, func() { incident.Unlock() }, nil
 }
 
 // getIncidentRecordForUpdate acquires lock AND takes snapshot for webhook comparison.
 // Caller MUST call returned unlock function if non-nil.
-func getIncidentRecordForUpdate(ctx context.Context, db db.DbDetails, incidentId string) (*Incident, func(), error) {
-	incident, unlock, err := getIncidentRecordReadOnly(ctx, db, incidentId)
+func getIncidentRecordForUpdate(ctx context.Context, db db.DbDetails, incidentId string, caller string) (*Incident, func(), error) {
+	incident, unlock, err := getIncidentRecordReadOnly(ctx, db, incidentId, caller)
 	if err != nil || incident == nil {
 		return nil, nil, err
 	}
@@ -84,14 +84,14 @@ func getIncidentRecordForUpdate(ctx context.Context, db db.DbDetails, incidentId
 
 // getOrCreateIncidentRecord gets existing or creates new, locked with snapshot.
 // Caller MUST call returned unlock function.
-func getOrCreateIncidentRecord(ctx context.Context, db db.DbDetails, incidentId string, pokestopId string) (*Incident, func(), error) {
+func getOrCreateIncidentRecord(ctx context.Context, db db.DbDetails, incidentId string, pokestopId string, caller string) (*Incident, func(), error) {
 	// Create new Incident atomically - function only called if key doesn't exist
 	incidentItem, _ := incidentCache.GetOrSetFunc(incidentId, func() *Incident {
 		return &Incident{IncidentData: IncidentData{Id: incidentId, PokestopId: pokestopId}, newRecord: true}
 	})
 
 	incident := incidentItem.Value()
-	incident.Lock()
+	incident.Lock(caller)
 
 	if incident.newRecord {
 		// We should attempt to load from database
@@ -146,13 +146,15 @@ func saveIncidentRecord(ctx context.Context, db db.DbDetails, incident *Incident
 	createIncidentWebhooks(ctx, db, incident)
 
 	var stopLat, stopLon float64
-	stop, unlock, _ := getPokestopRecordReadOnly(ctx, db, incident.PokestopId)
+	var stopCellId uint64
+	stop, unlock, _ := getPokestopRecordReadOnly(ctx, db, incident.PokestopId, "saveIncidentRecord")
 	if stop != nil {
 		stopLat, stopLon = stop.Lat, stop.Lon
+		stopCellId = uint64(stop.CellId.ValueOrZero())
 		unlock()
 	}
 
-	areas := MatchStatsGeofence(stopLat, stopLon)
+	areas := MatchStatsGeofenceWithCell(stopLat, stopLon, stopCellId)
 	updateIncidentStats(incident, areas)
 
 	if config.Config.FortInMemory {
@@ -217,12 +219,14 @@ func createIncidentWebhooks(ctx context.Context, db db.DbDetails, incident *Inci
 		var pokestopName, stopUrl string
 		var stopLat, stopLon float64
 		var stopEnabled bool
-		stop, unlock, _ := getPokestopRecordReadOnly(ctx, db, incident.PokestopId)
+		var stopCellId uint64
+		stop, unlock, _ := getPokestopRecordReadOnly(ctx, db, incident.PokestopId, "createIncidentWebhooks")
 		if stop != nil {
 			pokestopName = stop.Name.ValueOrZero()
 			stopLat, stopLon = stop.Lat, stop.Lon
 			stopUrl = stop.Url.ValueOrZero()
 			stopEnabled = stop.Enabled.ValueOrZero()
+			stopCellId = uint64(stop.CellId.ValueOrZero())
 			unlock()
 		}
 		if pokestopName == "" {
@@ -270,7 +274,7 @@ func createIncidentWebhooks(ctx context.Context, db db.DbDetails, incident *Inci
 			Lineup:                  lineup,
 		}
 
-		areas := MatchStatsGeofence(stopLat, stopLon)
+		areas := MatchStatsGeofenceWithCell(stopLat, stopLon, stopCellId)
 		webhooksSender.AddMessage(webhooks.Invasion, incidentHook, areas)
 		statsCollector.UpdateIncidentCount(areas)
 	}
