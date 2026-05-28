@@ -64,7 +64,7 @@ func (stop *Pokestop) updatePokestopFromFort(fortData *pogo.PokemonFortProto, ce
 		log.Warnf("Cleared Stop with id '%s' is found again in GMO, therefore un-deleted", stop.Id)
 		// Restore in fort tracker if enabled
 		if fortTracker != nil {
-			fortTracker.RestoreFort(stop.Id, cellId, false, time.Now().Unix())
+			fortTracker.RestoreFort(stop.Id, cellId, false, now*1000)
 		}
 	}
 	return stop
@@ -228,13 +228,9 @@ func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOu
 		case pogo.QuestConditionProto_WITH_RAID_LOCATION:
 		case pogo.QuestConditionProto_WITH_FRIENDS_RAID:
 		case pogo.QuestConditionProto_WITH_POKEMON_COSTUME:
-		default:
-			break
 		}
 
-		if infoData != nil {
-			condition["info"] = infoData
-		}
+		condition["info"] = infoData
 		conditions = append(conditions, condition)
 	}
 
@@ -352,8 +348,6 @@ func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOu
 		case pogo.QuestRewardProto_LEVEL_CAP:
 		case pogo.QuestRewardProto_INCIDENT:
 		case pogo.QuestRewardProto_PLAYER_ATTRIBUTE:
-		default:
-			break
 		}
 		reward["info"] = infoData
 		rewards = append(rewards, reward)
@@ -378,7 +372,7 @@ func (stop *Pokestop) updatePokestopFromQuestProto(questProto *pogo.FortSearchOu
 		}
 	}
 
-	if questExpiry.Valid == false {
+	if !questExpiry.Valid {
 		questExpiry = null.IntFrom(time.Now().Unix() + 24*60*60) // Set expiry to 24 hours from now
 	}
 
@@ -434,7 +428,7 @@ func (stop *Pokestop) updatePokestopFromFortDetailsProto(fortData *pogo.FortDeta
 		stop.SetDescription(null.StringFrom(fortData.Description))
 	}
 
-	if fortData.Modifier != nil && len(fortData.Modifier) > 0 {
+	if len(fortData.Modifier) > 0 {
 		// DeployingPlayerCodename contains the name of the player if we want that
 		lureId := int16(fortData.Modifier[0].ModifierType)
 		lureExpiry := fortData.Modifier[0].ExpirationTimeMs / 1000
@@ -507,10 +501,16 @@ func (stop *Pokestop) updatePokestopFromGetPokemonSizeContestEntryOutProto(conte
 	j := contestJson{LastUpdate: time.Now().Unix()}
 	j.TotalEntries = int(contestData.TotalEntries)
 
+	var newTopScore null.Float
+	var newTopPokemonId null.Int
 	for _, entry := range contestData.GetContestEntries() {
 		rank := entry.GetRank()
 		if rank > 3 {
 			break
+		}
+		if rank == 1 {
+			newTopScore = null.FloatFrom(entry.GetScore())
+			newTopPokemonId = null.IntFrom(int64(entry.GetPokedexId()))
 		}
 		j.ContestEntries = append(j.ContestEntries, contestEntry{
 			Rank:                  int(rank),
@@ -528,6 +528,17 @@ func (stop *Pokestop) updatePokestopFromGetPokemonSizeContestEntryOutProto(conte
 		})
 
 	}
+
+	// Detect rank-1 leaderboard movement against the running top stored in
+	// oldValues. The previous top is seeded from the loaded rankings JSON
+	// in afterLoadFromDB and updated here from the parsed proto entries —
+	// no further JSON re-parsing in any hot path.
+	if newTopScore != stop.oldValues.ShowcaseTopScore || newTopPokemonId != stop.oldValues.ShowcaseTopPokemonId {
+		stop.pokestopWebhookRequired = true
+		stop.oldValues.ShowcaseTopScore = newTopScore
+		stop.oldValues.ShowcaseTopPokemonId = newTopPokemonId
+	}
+
 	jsonString, _ := json.Marshal(j)
 	stop.SetShowcaseRankings(null.StringFrom(string(jsonString)))
 }

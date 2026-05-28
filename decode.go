@@ -122,7 +122,7 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 	}
 	if !ignore {
 		elapsed := time.Since(start)
-		if processed == true {
+		if processed {
 			statsCollector.IncDecodeMethods("ok", "", getMethodName(method, true))
 			log.Debugf("%s/%s %s - %s - %s", protoData.Uuid, protoData.Account, pogo.Method(method), elapsed, result)
 		} else {
@@ -209,7 +209,7 @@ func decodeGetFriendDetails(payload []byte) string {
 
 	if getFriendDetailsOutProto.GetResult() != pogo.InternalGetFriendDetailsOutProto_SUCCESS || getFriendDetailsOutProto.GetFriend() == nil {
 		statsCollector.IncDecodeGetFriendDetails("error", "non_success")
-		return fmt.Sprintf("unsuccessful get friends details")
+		return "unsuccessful get friends details"
 	}
 
 	failures := 0
@@ -239,7 +239,7 @@ func decodeSearchPlayer(proxyRequestProto *pogo.ProxyRequestProto, payload []byt
 
 	if searchPlayerOutProto.GetResult() != pogo.InternalSearchPlayerOutProto_SUCCESS || searchPlayerOutProto.GetPlayer() == nil {
 		statsCollector.IncDecodeSearchPlayer("error", "non_success")
-		return fmt.Sprintf("unsuccessful search player response")
+		return "unsuccessful search player response"
 	}
 
 	var searchPlayerProto pogo.InternalSearchPlayerProto
@@ -258,7 +258,7 @@ func decodeSearchPlayer(proxyRequestProto *pogo.ProxyRequestProto, payload []byt
 	}
 
 	statsCollector.IncDecodeSearchPlayer("ok", "")
-	return fmt.Sprintf("1 player decoded from SearchPlayerProto")
+	return "1 player decoded from SearchPlayerProto"
 }
 
 func decodeFortDetails(ctx context.Context, sDec []byte) string {
@@ -338,11 +338,11 @@ func decodeGetRoutes(ctx context.Context, payload []byte) string {
 			}
 			decodeError := decoder.UpdateRouteRecordWithSharedRouteProto(ctx, dbDetails, route)
 			if decodeError != nil {
-				if decodeErrors[route.Id] != true {
+				if !decodeErrors[route.Id] {
 					decodeErrors[route.Id] = true
 				}
 				log.Errorf("Failed to decode route %s", decodeError)
-			} else if decodeSuccesses[route.Id] != true {
+			} else if !decodeSuccesses[route.Id] {
 				decodeSuccesses[route.Id] = true
 			}
 		}
@@ -483,24 +483,20 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 	var newNearbyPokemon []decoder.RawNearbyPokemonData
 	var newMapPokemon []decoder.RawMapPokemonData
 	var newMapCells []uint64
-	var cellsToBeCleaned []uint64
 
-	// track forts per cell for memory-based cleanup (only if tracker enabled)
+	// track forts per cell for memory-based cleanup (every map cell gets an
+	// entry, so empty fort lists are seen as "no forts" by the tracker)
 	cellForts := make(map[uint64]*decoder.FortTrackerGMOContents)
 
 	if len(decodedGmo.MapCell) == 0 {
 		return "Skipping GetMapObjectsOutProto: No map cells found"
 	}
 	for _, mapCell := range decodedGmo.MapCell {
-		// initialize cell forts tracking for every map cell (so empty fort lists are seen as "no forts")
 		cellForts[mapCell.S2CellId] = &decoder.FortTrackerGMOContents{
 			Pokestops: make([]string, 0),
 			Gyms:      make([]string, 0),
 			Timestamp: mapCell.AsOfTimeMs,
 		}
-		// always mark this mapCell to be checked for removed forts. Previously only cells with forts were
-		// added which meant an empty fort list (all forts removed) was never passed to the tracker.
-		cellsToBeCleaned = append(cellsToBeCleaned, mapCell.S2CellId)
 
 		if isCellNotEmpty(mapCell) {
 			newMapCells = append(newMapCells, mapCell.S2CellId)
@@ -562,7 +558,7 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 	}
 
 	if scanParameters.ProcessGyms || scanParameters.ProcessPokestops {
-		decoder.CheckRemovedForts(ctx, dbDetails, cellsToBeCleaned, cellForts)
+		decoder.CheckRemovedForts(ctx, dbDetails, cellForts)
 	}
 
 	newFortsLen := len(newForts)
@@ -587,10 +583,6 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 
 func isCellNotEmpty(mapCell *pogo.ClientMapCellProto) bool {
 	return len(mapCell.Stations) > 0 || len(mapCell.Fort) > 0 || len(mapCell.WildPokemon) > 0 || len(mapCell.NearbyPokemon) > 0 || len(mapCell.CatchablePokemon) > 0
-}
-
-func cellContainsForts(mapCell *pogo.ClientMapCellProto) bool {
-	return len(mapCell.Fort) > 0
 }
 
 func decodeGetContestData(ctx context.Context, request []byte, data []byte) string {
