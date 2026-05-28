@@ -53,7 +53,7 @@ func main() {
 
 	logLevel := log.InfoLevel
 
-	if cfg.Logging.Debug == true {
+	if cfg.Logging.Debug {
 		logLevel = log.DebugLevel
 	}
 	SetupLogger(
@@ -65,7 +65,7 @@ func main() {
 		cfg.Logging.Compress,
 	)
 
-	log.Infof("Golbat starting")
+	log.Infof("Golbat starting: revision=%s modified=%v built=%s", gitRevision, gitModified, buildTime)
 
 	// Both Sentry & Pyroscope are optional and off by default. Read more:
 	// https://docs.sentry.io/platforms/go
@@ -237,19 +237,19 @@ func main() {
 		StartDatabaseArchiver(db)
 	}
 
-	if cfg.Cleanup.Incidents == true {
+	if cfg.Cleanup.Incidents {
 		StartIncidentExpiry(db)
 	}
 
-	if cfg.Cleanup.Tappables == true {
+	if cfg.Cleanup.Tappables {
 		StartTappableExpiry(db)
 	}
 
-	if cfg.Cleanup.Quests == true {
+	if cfg.Cleanup.Quests {
 		StartQuestExpiry(dbDetails)
 	}
 
-	if cfg.Cleanup.Stats == true {
+	if cfg.Cleanup.Stats {
 		StartStatsExpiry(db)
 	}
 
@@ -258,7 +258,11 @@ func main() {
 	if staleThreshold <= 0 {
 		staleThreshold = 3600 // def 1 hour
 	}
-	decoder.InitFortTracker(staleThreshold)
+	minMissCount := cfg.Cleanup.FortsMinMissCount
+	if minMissCount <= 0 {
+		minMissCount = 1
+	}
+	decoder.InitFortTracker(staleThreshold, minMissCount)
 
 	// Determine loading strategy
 	// Preload: warms cache for forts, stations, and recent spawnpoints
@@ -323,6 +327,7 @@ func main() {
 
 	r.POST("/raw", Raw)
 	r.GET("/health", GetHealth)
+	r.GET("/version", GetVersion)
 
 	apiGroup := r.Group("/api", AuthRequired())
 	apiGroup.GET("/health", GetHealth)

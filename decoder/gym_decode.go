@@ -25,7 +25,7 @@ func calculatePowerUpPoints(fortData *pogo.PokemonFortProto) (null.Int, null.Int
 	now := time.Now().Unix()
 	powerUpLevelExpirationMs := int64(fortData.PowerUpLevelExpirationMs) / 1000
 	powerUpPoints := int64(fortData.PowerUpProgressPoints)
-	powerUpLevel := null.IntFrom(0)
+	var powerUpLevel null.Int
 	powerUpEndTimestamp := null.NewInt(0, false)
 	if powerUpPoints < 50 {
 		powerUpLevel = null.IntFrom(0)
@@ -45,7 +45,7 @@ func calculatePowerUpPoints(fortData *pogo.PokemonFortProto) (null.Int, null.Int
 	return powerUpLevel, powerUpEndTimestamp
 }
 
-func (gym *Gym) updateGymFromFort(fortData *pogo.PokemonFortProto, cellId uint64) *Gym {
+func (gym *Gym) updateGymFromFort(fortData *pogo.PokemonFortProto, cellId uint64, timestampMs int64) *Gym {
 	type pokemonDisplay struct {
 		Form                  int    `json:"form,omitempty"`
 		Costume               int    `json:"costume,omitempty"`
@@ -158,14 +158,16 @@ func (gym *Gym) updateGymFromFort(fortData *pogo.PokemonFortProto, cellId uint64
 		gym.SetRaidIsExclusive(null.IntFrom(0)) //null.IntFrom(util.BoolToInt[int64](fortData.RaidInfo.IsExclusive))
 	}
 
-	gym.SetCellId(null.IntFrom(int64(cellId)))
+	if cellId != 0 {
+		gym.SetCellId(null.IntFrom(int64(cellId)))
+	}
 
 	if gym.Deleted {
 		gym.SetDeleted(false)
 		log.Warnf("Cleared Gym with id '%s' is found again in GMO, therefore un-deleted", gym.Id)
 		// Restore in fort tracker if enabled
 		if fortTracker != nil {
-			fortTracker.RestoreFort(gym.Id, cellId, true, time.Now().Unix())
+			fortTracker.RestoreFort(gym.Id, cellId, true, timestampMs)
 		}
 	}
 
@@ -201,60 +203,65 @@ func (gym *Gym) updateGymFromGymInfoOutProto(gymData *pogo.GymGetInfoOutProto) *
 		gym.SetDescription(null.StringFrom(gymData.Description))
 	}
 
-	type pokemonGymDefender struct {
-		PokemonId             int                `json:"pokemon_id,omitempty"`
-		Form                  int                `json:"form,omitempty"`
-		Costume               int                `json:"costume,omitempty"`
-		Gender                int                `json:"gender"`
-		Shiny                 bool               `json:"shiny,omitempty"`
-		TempEvolution         int                `json:"temp_evolution,omitempty"`
-		TempEvolutionFinishMs int64              `json:"temp_evolution_finish_ms,omitempty"`
-		Alignment             int                `json:"alignment,omitempty"`
-		Badge                 int                `json:"badge,omitempty"`
-		Background            *int64             `json:"background,omitempty"`
-		DeployedMs            int64              `json:"deployed_ms,omitempty"`
-		DeployedTime          int64              `json:"deployed_time,omitempty"`
-		BattlesWon            int32              `json:"battles_won"`
-		BattlesLost           int32              `json:"battles_lost"`
-		TimesFed              int32              `json:"times_fed"`
-		MotivationNow         util.RoundedFloat4 `json:"motivation_now"`
-		CpNow                 int32              `json:"cp_now"`
-		CpWhenDeployed        int32              `json:"cp_when_deployed"`
-	}
-
-	var defenders []pokemonGymDefender
-	now := time.Now()
-	for _, protoDefender := range gymData.GymStatusAndDefenders.GymDefender {
-		motivatedPokemon := protoDefender.MotivatedPokemon
-		pokemonDisplay := motivatedPokemon.Pokemon.PokemonDisplay
-		deploymentTotals := protoDefender.DeploymentTotals
-		defender := pokemonGymDefender{
-			DeployedMs: protoDefender.DeploymentTotals.DeploymentDurationMs,
-			DeployedTime: now.
-				Add(-1 * time.Millisecond * time.Duration(deploymentTotals.DeploymentDurationMs)).
-				Unix(), // This will only be approximately correct
-			BattlesLost:           deploymentTotals.BattlesLost,
-			BattlesWon:            deploymentTotals.BattlesWon,
-			TimesFed:              deploymentTotals.TimesFed,
-			PokemonId:             int(protoDefender.MotivatedPokemon.Pokemon.PokemonId),
-			Form:                  int(pokemonDisplay.Form),
-			Costume:               int(pokemonDisplay.Costume),
-			Gender:                int(pokemonDisplay.Gender),
-			TempEvolution:         int(pokemonDisplay.CurrentTempEvolution),
-			TempEvolutionFinishMs: pokemonDisplay.TemporaryEvolutionFinishMs,
-			Alignment:             int(pokemonDisplay.Alignment),
-			Badge:                 int(pokemonDisplay.PokemonBadge),
-			Background:            util.ExtractBackgroundFromDisplay(pokemonDisplay),
-			Shiny:                 pokemonDisplay.Shiny,
-			MotivationNow:         util.RoundedFloat4(motivatedPokemon.MotivationNow),
-			CpNow:                 motivatedPokemon.CpNow,
-			CpWhenDeployed:        motivatedPokemon.CpWhenDeployed,
+	if status := gymData.GymStatusAndDefenders; status != nil {
+		type pokemonGymDefender struct {
+			PokemonId             int                `json:"pokemon_id,omitempty"`
+			Form                  int                `json:"form,omitempty"`
+			Costume               int                `json:"costume,omitempty"`
+			Gender                int                `json:"gender"`
+			Shiny                 bool               `json:"shiny,omitempty"`
+			TempEvolution         int                `json:"temp_evolution,omitempty"`
+			TempEvolutionFinishMs int64              `json:"temp_evolution_finish_ms,omitempty"`
+			Alignment             int                `json:"alignment,omitempty"`
+			Badge                 int                `json:"badge,omitempty"`
+			Background            *int64             `json:"background,omitempty"`
+			DeployedMs            int64              `json:"deployed_ms,omitempty"`
+			DeployedTime          int64              `json:"deployed_time,omitempty"`
+			BattlesWon            int32              `json:"battles_won"`
+			BattlesLost           int32              `json:"battles_lost"`
+			TimesFed              int32              `json:"times_fed"`
+			MotivationNow         util.RoundedFloat4 `json:"motivation_now"`
+			CpNow                 int32              `json:"cp_now"`
+			CpWhenDeployed        int32              `json:"cp_when_deployed"`
 		}
-		defenders = append(defenders, defender)
+
+		var defenders []pokemonGymDefender
+		now := time.Now()
+		for _, protoDefender := range status.GymDefender {
+			motivatedPokemon := protoDefender.MotivatedPokemon
+			pokemonDisplay := motivatedPokemon.Pokemon.PokemonDisplay
+			deploymentTotals := protoDefender.DeploymentTotals
+			defender := pokemonGymDefender{
+				DeployedMs: protoDefender.DeploymentTotals.DeploymentDurationMs,
+				DeployedTime: now.
+					Add(-1 * time.Millisecond * time.Duration(deploymentTotals.DeploymentDurationMs)).
+					Unix(), // This will only be approximately correct
+				BattlesLost:           deploymentTotals.BattlesLost,
+				BattlesWon:            deploymentTotals.BattlesWon,
+				TimesFed:              deploymentTotals.TimesFed,
+				PokemonId:             int(protoDefender.MotivatedPokemon.Pokemon.PokemonId),
+				Form:                  int(pokemonDisplay.Form),
+				Costume:               int(pokemonDisplay.Costume),
+				Gender:                int(pokemonDisplay.Gender),
+				TempEvolution:         int(pokemonDisplay.CurrentTempEvolution),
+				TempEvolutionFinishMs: pokemonDisplay.TemporaryEvolutionFinishMs,
+				Alignment:             int(pokemonDisplay.Alignment),
+				Badge:                 int(pokemonDisplay.PokemonBadge),
+				Background:            util.ExtractBackgroundFromDisplay(pokemonDisplay),
+				Shiny:                 pokemonDisplay.Shiny,
+				MotivationNow:         util.RoundedFloat4(motivatedPokemon.MotivationNow),
+				CpNow:                 motivatedPokemon.CpNow,
+				CpWhenDeployed:        motivatedPokemon.CpWhenDeployed,
+			}
+			defenders = append(defenders, defender)
+		}
+		bDefenders, _ := json.Marshal(defenders)
+		gym.SetDefenders(null.StringFrom(string(bDefenders)))
+
+		if fortProto := status.PokemonFortProto; fortProto != nil {
+			gym.updateGymFromFort(fortProto, 0, 0)
+		}
 	}
-	bDefenders, _ := json.Marshal(defenders)
-	gym.SetDefenders(null.StringFrom(string(bDefenders)))
-	//	log.Debugf("Gym %s defenders %s ", gym.Id, string(bDefenders))
 
 	return gym
 }
