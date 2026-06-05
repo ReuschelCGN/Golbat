@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/guregu/null/v6"
 )
@@ -47,7 +48,12 @@ type Station struct {
 
 	StationData // Embedded data fields - can be copied for write-behind queue
 
+	// Memory-only fields (not persisted to DB)
+	BattleLobbyCount null.Int `db:"-" json:"-"` // Max-battle lobby player count (memory only)
+	BattleLobbyEndMs null.Int `db:"-" json:"-"` // Max-battle lobby join-end timestamp ms (memory only)
+
 	dirty         bool     `db:"-" json:"-"` // Not persisted - tracks if object needs saving
+	internalDirty bool     `db:"-" json:"-"` // Not persisted - tracks if object needs saving (in memory only)
 	newRecord     bool     `db:"-" json:"-"` // Not persisted - tracks if this is a new record
 	changedFields []string `db:"-" json:"-"` // Track which fields changed (only when dbDebugEnabled)
 
@@ -56,13 +62,8 @@ type Station struct {
 
 // StationOldValues holds old field values for webhook comparison
 type StationOldValues struct {
-	EndTime                int64
-	BattleEnd              null.Int
-	BattlePokemonId        null.Int
-	BattlePokemonForm      null.Int
-	BattlePokemonCostume   null.Int
-	BattlePokemonGender    null.Int
-	BattlePokemonBreadMode null.Int
+	EndTime        int64
+	BattleSnapshot stationBattleSnapshot
 }
 
 // IsDirty returns true if any field has been modified
@@ -73,6 +74,12 @@ func (station *Station) IsDirty() bool {
 // ClearDirty resets the dirty flag (call after saving to DB)
 func (station *Station) ClearDirty() {
 	station.dirty = false
+	station.internalDirty = false
+}
+
+// IsInternalDirty returns true if any in-memory-only field has been modified
+func (station *Station) IsInternalDirty() bool {
+	return station.internalDirty
 }
 
 // IsNewRecord returns true if this is a new record (not yet in DB)
@@ -94,13 +101,8 @@ func (station *Station) Unlock() {
 // Call this after loading from cache/DB but before modifications
 func (station *Station) snapshotOldValues() {
 	station.oldValues = StationOldValues{
-		EndTime:                station.EndTime,
-		BattleEnd:              station.BattleEnd,
-		BattlePokemonId:        station.BattlePokemonId,
-		BattlePokemonForm:      station.BattlePokemonForm,
-		BattlePokemonCostume:   station.BattlePokemonCostume,
-		BattlePokemonGender:    station.BattlePokemonGender,
-		BattlePokemonBreadMode: station.BattlePokemonBreadMode,
+		EndTime:        station.EndTime,
+		BattleSnapshot: snapshotStationBattles(getKnownStationBattles(station.Id, time.Now().Unix())),
 	}
 }
 
@@ -374,4 +376,28 @@ func (station *Station) SetUpdated(v int64) {
 		station.Updated = v
 		station.dirty = true
 	}
+}
+
+// SetBattleLobbyCount sets the Max-battle lobby player count (memory only, not saved to DB)
+func (station *Station) SetBattleLobbyCount(v null.Int) {
+	if station.BattleLobbyCount != v {
+		station.BattleLobbyCount = v
+		station.internalDirty = true
+	}
+}
+
+// SetBattleLobbyEndMs sets the Max-battle lobby join-end timestamp (memory only, not saved to DB)
+func (station *Station) SetBattleLobbyEndMs(v null.Int) {
+	if station.BattleLobbyEndMs != v {
+		station.BattleLobbyEndMs = v
+		station.internalDirty = true
+	}
+}
+
+// updateBattleLobby applies a Max-battle lobby update (memory only). Push-gateway
+// lobby messages carry no usable publish timestamp, so each update is applied as
+// it arrives.
+func (station *Station) updateBattleLobby(playerCount int32, joinEndMs int64) {
+	station.SetBattleLobbyCount(null.IntFrom(int64(playerCount)))
+	station.SetBattleLobbyEndMs(null.IntFrom(joinEndMs))
 }
