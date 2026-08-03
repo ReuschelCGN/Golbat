@@ -55,11 +55,12 @@ func ReadConfig() (configDefinition, error) {
 		},
 		Tuning: tuning{
 			MaxPokemonResults:              3000,
+			MaxFortResults:                 9000,
 			MaxPokemonDistance:             100,
 			MaxConcurrentProactiveIVSwitch: 6,
 			ReduceUpdates:                  false,
 			WriteBehindStartupDelay:        120, // 2 minutes
-			WriteBehindWorkerCount:         50,  // concurrent writers
+			WriteBehindWorkerCount:         16,  // concurrent writers (see config.toml.example)
 			WriteBehindBatchSize:           50,  // entries per batch
 			WriteBehindBatchTimeoutMs:      100, // ms to wait for batch to fill
 		},

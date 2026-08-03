@@ -64,9 +64,10 @@ func PreloadForts(dbDetails db.DbDetails, populateRtree bool) error {
 	startTime := time.Now()
 
 	var wg sync.WaitGroup
-	var pokestopCount, gymCount int32
+	var pokestopCount, gymCount, stationCount int32
 
-	wg.Add(2)
+	// Phase 1: forts (pokestops, gyms, stations) in parallel.
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		pokestopCount = preloadPokestops(dbDetails, populateRtree)
@@ -75,10 +76,17 @@ func PreloadForts(dbDetails db.DbDetails, populateRtree bool) error {
 		defer wg.Done()
 		gymCount = preloadGyms(dbDetails, populateRtree)
 	}()
+	go func() {
+		defer wg.Done()
+		stationCount = preloadStations(dbDetails, populateRtree)
+	}()
 	wg.Wait()
 
-	log.Infof("PreloadForts: loaded %d pokestops and %d gyms in %v (rtree=%v)",
-		pokestopCount, gymCount, time.Since(startTime), populateRtree)
+	// Phase 2: station battles depend on stationCache being populated.
+	stationBattleCount := preloadStationBattles(dbDetails, populateRtree)
+
+	log.Infof("PreloadForts: loaded %d pokestops, %d gyms, %d stations, %d station battles in %v (rtree=%v)",
+		pokestopCount, gymCount, stationCount, stationBattleCount, time.Since(startTime), populateRtree)
 
 	return nil
 }
@@ -103,7 +111,7 @@ func preloadPokestops(dbDetails db.DbDetails, populateRtree bool) int32 {
 			defer wg.Done()
 			for pokestop := range jobs {
 				// Add to cache
-				pokestopCache.Set(pokestop.Id, pokestop, 0) // 0 = use default TTL
+				pokestopCache.Set(pokestop.Id, pokestop, fortCacheEntryTTL())
 
 				// Update rtree if enabled
 				if populateRtree {
@@ -168,7 +176,7 @@ func preloadGyms(dbDetails db.DbDetails, populateRtree bool) int32 {
 			defer wg.Done()
 			for gym := range jobs {
 				// Add to cache
-				gymCache.Set(gym.Id, gym, 0) // 0 = use default TTL
+				gymCache.Set(gym.Id, gym, fortCacheEntryTTL())
 
 				// Update rtree if enabled
 				if populateRtree {
@@ -228,7 +236,7 @@ func preloadStations(dbDetails db.DbDetails, populateRtree bool) int32 {
 			defer wg.Done()
 			for station := range jobs {
 				// Add to cache
-				stationCache.Set(station.Id, station, 0) // 0 = use default TTL
+				stationCache.Set(station.Id, station, fortCacheEntryTTL())
 
 				// Update rtree if enabled
 				if populateRtree {

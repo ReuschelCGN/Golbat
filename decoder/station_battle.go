@@ -10,9 +10,8 @@ import (
 	"time"
 
 	"github.com/guregu/null/v6"
-	"github.com/jellydator/ttlcache/v3"
 	"github.com/jmoiron/sqlx"
-	"github.com/puzpuzpuz/xsync/v3"
+	"github.com/puzpuzpuz/xsync/v4"
 	log "github.com/sirupsen/logrus"
 
 	"golbat/db"
@@ -43,6 +42,24 @@ type FortLookupStationBattle struct {
 	BattleLevel        int8
 	BattlePokemonId    int16
 	BattlePokemonForm  int16
+}
+
+// FortLookupIncident is one active incident on a pokestop (slot1 only — slots 2/3 are
+// unused). Mirrors FortLookupStationBattle; FortLookup.Incidents holds all active
+// incidents on a stop so concurrent incidents (e.g. an invasion + a showcase) don't
+// clobber one another.
+type FortLookupIncident struct {
+	Id              string // incident id — fetch handle into incidentCache (not DNF-used)
+	DisplayType     int8
+	Character       int16
+	Confirmed       bool
+	Slot1PokemonId  int16
+	Slot1Form       int16
+	Slot2PokemonId  int16
+	Slot2Form       int16
+	Slot3PokemonId  int16
+	Slot3Form       int16
+	ExpireTimestamp int64 // used to skip expired incidents at filter time
 }
 
 type stationBattleWrite struct {
@@ -119,12 +136,12 @@ ON DUPLICATE KEY UPDATE
 `
 
 var (
-	stationBattleCache        *xsync.MapOf[string, stationBattleState]
+	stationBattleCache        *xsync.Map[string, stationBattleState]
 	stationBattleSnapshotSeed = maphash.MakeSeed()
 )
 
 func initStationBattleCache() {
-	stationBattleCache = xsync.NewMapOf[string, stationBattleState]()
+	stationBattleCache = xsync.NewMap[string, stationBattleState]()
 }
 
 func storeStationBattles(stationId string, battles []StationBattleData) {
@@ -432,6 +449,8 @@ func applyTopStationBattleToApiStationResult(result *ApiStationResult, battles [
 	result.BattlePokemonBreadMode = battle.BattlePokemonBreadMode.Ptr()
 	result.BattlePokemonMove1 = battle.BattlePokemonMove1.Ptr()
 	result.BattlePokemonMove2 = battle.BattlePokemonMove2.Ptr()
+	result.BattlePokemonStamina = battle.BattlePokemonStamina.Ptr()
+	result.BattlePokemonCpMultiplier = battle.BattlePokemonCpMultiplier.Ptr()
 }
 
 func applyTopStationBattleToStationWebhook(hook *StationWebhook, battles []StationBattleData) {
@@ -463,6 +482,7 @@ func buildApiStationBattleResults(battles []StationBattleData) []ApiStationBattl
 			BattleLevel:               battle.BattleLevel,
 			BattleStart:               battle.BattleStart,
 			BattleEnd:                 battle.BattleEnd,
+			Updated:                   battle.Updated,
 			BattlePokemonId:           battle.BattlePokemonId.Ptr(),
 			BattlePokemonForm:         battle.BattlePokemonForm.Ptr(),
 			BattlePokemonCostume:      battle.BattlePokemonCostume.Ptr(),
@@ -611,13 +631,16 @@ func flushStationBattleBatch(ctx context.Context, dbDetails db.DbDetails, snapsh
 
 func loadStationBattlesForStation(ctx context.Context, dbDetails db.DbDetails, stationId string, now int64) ([]StationBattleData, error) {
 	var battles []StationBattleData
-	err := dbDetails.GeneralDb.SelectContext(ctx, &battles, `
+	err := timedDbQuery("loadStationBattlesForStation", dbDetails.GeneralDb, func() error {
+		err := dbDetails.GeneralDb.SelectContext(ctx, &battles, `
 		SELECT `+stationBattleSelectColumns+`
 		FROM station_battle
 		WHERE station_id = ? AND battle_end > ?
 		ORDER BY battle_end ASC
 	`, stationId, now)
-	statsCollector.IncDbQuery("select station_battle station", err)
+		statsCollector.IncDbQuery("select station_battle station", err)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -637,13 +660,11 @@ func hydrateStationBattlesForStation(ctx context.Context, dbDetails db.DbDetails
 }
 
 func finalizePreloadedStationBattles(populateRtree bool) {
-	stationCache.Range(func(item *ttlcache.Item[string, *Station]) bool {
-		stationId := item.Key()
+	stationCache.Range(func(stationId string, station *Station) bool {
 		if _, ok := stationBattleCache.Load(stationId); !ok {
 			storeStationBattles(stationId, nil)
 		}
 		if populateRtree {
-			station := item.Value()
 			station.Lock("preloadStationBattles")
 			fortRtreeUpdateStationOnSave(station)
 			station.Unlock()
@@ -669,7 +690,7 @@ func preloadStationBattles(dbDetails db.DbDetails, populateRtree bool) int32 {
 	currentStationId := ""
 	currentBattles := make([]StationBattleData, 0)
 	flushCurrent := func() {
-		if currentStationId != "" && stationCache.Get(currentStationId) != nil {
+		if currentStationId != "" && stationCache.Has(currentStationId) {
 			storeStationBattles(currentStationId, currentBattles)
 			count += int32(len(currentBattles))
 		}
