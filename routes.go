@@ -349,6 +349,14 @@ func Raw(c *gin.Context) {
 
 	// Process each proto in a packet in sequence, but in a go-routine
 	go func() {
+		release, ok := acquireRawProcessingSlot()
+		if !ok {
+			// Parked queue over its cap during a stall — shed rather than
+			// pin yet another decoded payload in memory (already logged).
+			return
+		}
+		defer release()
+
 		timeout := 5 * time.Second
 		if config.Config.Tuning.ExtendedTimeout {
 			timeout = 30 * time.Second
@@ -374,19 +382,28 @@ func Raw(c *gin.Context) {
 				ScanContext: scanContext,
 				TimestampMs: dataReceivedTimestamp,
 			}
-			protoData.Data, _ = b64.StdEncoding.DecodeString(payload)
-			if request != "" {
-				protoData.Request, _ = b64.StdEncoding.DecodeString(request)
-			}
+			// Pool the decoded-payload buffers. This is the HTTP /raw path;
+			// the payload lives only for this one decode() call and standard
+			// protobuf-go copies bytes out during Unmarshal, so the buffers are
+			// safe to recycle the moment decode() returns. (The gRPC ingest
+			// path has no base64 buffer of ours to pool — its payloads arrive
+			// as raw bytes and grpc-go already pools its transport buffers.)
+			var releaseData, releaseReq func()
+			protoData.Data, releaseData = decodeBase64Pooled(payload)
+			protoData.Request, releaseReq = decodeBase64Pooled(request)
 
 			// provide independent cancellation contexts for each proto decode
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			decode(ctx, method, &protoData)
 			cancel()
+			releaseData()
+			releaseReq()
 		}
 
 		for _, entry := range nebulaItems {
-			go decodeNebula(context.Background(), entry.Endpoint, &entry)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			decodeNebula(ctx, entry.Endpoint, &entry)
+			cancel()
 		}
 
 		for _, entry := range pushItems {
@@ -440,9 +457,7 @@ func PokemonScan(c *gin.Context) {
 	c.JSON(http.StatusAccepted, res)
 }
 
-
 // GetHealth provides unrestricted health status for monitoring tools
 func GetHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
-

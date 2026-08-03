@@ -13,6 +13,21 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// clientProtoUnmarshalOpts decodes inbound game-client protos with
+// DiscardUnknown. This is safe — and a measured win (+~3.7% decode rate,
+// −5.5% allocated objects) — because Golbat only ever READS these protos and
+// never re-serializes them, so protobuf-go's default behavior of retaining
+// unknown fields (present because production payloads are a newer game version
+// than our vbase schema) is pure allocation churn. Applies on both ingest
+// paths, since both funnel their per-packet decode through the calls below.
+var clientProtoUnmarshalOpts = proto.UnmarshalOptions{DiscardUnknown: true}
+
+// unmarshalClientProto is proto.Unmarshal with DiscardUnknown. Use it for
+// every inbound client proto (see clientProtoUnmarshalOpts).
+func unmarshalClientProto(b []byte, m proto.Message) error {
+	return clientProtoUnmarshalOpts.Unmarshal(b, m)
+}
+
 func decode(ctx context.Context, method int, protoData *ProtoData) {
 	getMethodName := func(method int, trimString bool) string {
 		if val, ok := pogo.Method_name[int32(method)]; ok {
@@ -59,7 +74,7 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 		}
 		processed = true
 	case pogo.Method_METHOD_DISK_ENCOUNTER:
-		result = decodeDiskEncounter(ctx, protoData.Data, protoData.Account)
+		result = decodeDiskEncounter(ctx, protoData.Request, protoData.Data, protoData.Account)
 		processed = true
 	case pogo.Method_METHOD_FORT_SEARCH:
 		result = decodeQuest(ctx, protoData.Data, protoData.HaveAr)
@@ -144,7 +159,7 @@ func decodeQuest(ctx context.Context, sDec []byte, haveAr *bool) string {
 		return "No AR quest info"
 	}
 	decodedQuest := &pogo.FortSearchOutProto{}
-	if err := proto.Unmarshal(sDec, decodedQuest); err != nil {
+	if err := unmarshalClientProto(sDec, decodedQuest); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeQuest("error", "parse")
 		return "Parse failure"
@@ -164,7 +179,7 @@ func decodeQuest(ctx context.Context, sDec []byte, haveAr *bool) string {
 func decodeSocialActionWithRequest(request []byte, payload []byte) string {
 	var proxyRequestProto pogo.ProxyRequestProto
 
-	if err := proto.Unmarshal(request, &proxyRequestProto); err != nil {
+	if err := unmarshalClientProto(request, &proxyRequestProto); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeSocialActionWithRequest("error", "request_parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -172,7 +187,7 @@ func decodeSocialActionWithRequest(request []byte, payload []byte) string {
 
 	var proxyResponseProto pogo.ProxyResponseProto
 
-	if err := proto.Unmarshal(payload, &proxyResponseProto); err != nil {
+	if err := unmarshalClientProto(payload, &proxyResponseProto); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeSocialActionWithRequest("error", "response_parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -199,7 +214,7 @@ func decodeSocialActionWithRequest(request []byte, payload []byte) string {
 
 func decodeGetFriendDetails(payload []byte) string {
 	var getFriendDetailsOutProto pogo.InternalGetFriendDetailsOutProto
-	getFriendDetailsError := proto.Unmarshal(payload, &getFriendDetailsOutProto)
+	getFriendDetailsError := unmarshalClientProto(payload, &getFriendDetailsOutProto)
 
 	if getFriendDetailsError != nil {
 		statsCollector.IncDecodeGetFriendDetails("error", "parse")
@@ -229,7 +244,7 @@ func decodeGetFriendDetails(payload []byte) string {
 
 func decodeSearchPlayer(proxyRequestProto *pogo.ProxyRequestProto, payload []byte) string {
 	var searchPlayerOutProto pogo.InternalSearchPlayerOutProto
-	searchPlayerOutError := proto.Unmarshal(payload, &searchPlayerOutProto)
+	searchPlayerOutError := unmarshalClientProto(payload, &searchPlayerOutProto)
 
 	if searchPlayerOutError != nil {
 		log.Errorf("Failed to parse %s", searchPlayerOutError)
@@ -243,7 +258,7 @@ func decodeSearchPlayer(proxyRequestProto *pogo.ProxyRequestProto, payload []byt
 	}
 
 	var searchPlayerProto pogo.InternalSearchPlayerProto
-	searchPlayerError := proto.Unmarshal(proxyRequestProto.GetPayload(), &searchPlayerProto)
+	searchPlayerError := unmarshalClientProto(proxyRequestProto.GetPayload(), &searchPlayerProto)
 
 	if searchPlayerError != nil || searchPlayerProto.GetFriendCode() == "" {
 		statsCollector.IncDecodeSearchPlayer("error", "parse")
@@ -263,7 +278,7 @@ func decodeSearchPlayer(proxyRequestProto *pogo.ProxyRequestProto, payload []byt
 
 func decodeFortDetails(ctx context.Context, sDec []byte) string {
 	decodedFort := &pogo.FortDetailsOutProto{}
-	if err := proto.Unmarshal(sDec, decodedFort); err != nil {
+	if err := unmarshalClientProto(sDec, decodedFort); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeFortDetails("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -284,7 +299,7 @@ func decodeFortDetails(ctx context.Context, sDec []byte) string {
 
 func decodeGetMapForts(ctx context.Context, sDec []byte) string {
 	decodedMapForts := &pogo.GetMapFortsOutProto{}
-	if err := proto.Unmarshal(sDec, decodedMapForts); err != nil {
+	if err := unmarshalClientProto(sDec, decodedMapForts); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeGetMapForts("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -317,7 +332,7 @@ func decodeGetMapForts(ctx context.Context, sDec []byte) string {
 
 func decodeGetRoutes(ctx context.Context, payload []byte) string {
 	getRoutesOutProto := &pogo.GetRoutesOutProto{}
-	if err := proto.Unmarshal(payload, getRoutesOutProto); err != nil {
+	if err := unmarshalClientProto(payload, getRoutesOutProto); err != nil {
 		return fmt.Sprintf("failed to decode GetRoutesOutProto %s", err)
 	}
 
@@ -358,7 +373,7 @@ func decodeGetRoutes(ctx context.Context, payload []byte) string {
 
 func decodeGetGymInfo(ctx context.Context, sDec []byte) string {
 	decodedGymInfo := &pogo.GymGetInfoOutProto{}
-	if err := proto.Unmarshal(sDec, decodedGymInfo); err != nil {
+	if err := unmarshalClientProto(sDec, decodedGymInfo); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeGetGymInfo("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -377,7 +392,7 @@ func decodeGetGymInfo(ctx context.Context, sDec []byte) string {
 
 func decodeEncounter(ctx context.Context, sDec []byte, username string, timestampMs int64) string {
 	decodedEncounterInfo := &pogo.EncounterOutProto{}
-	if err := proto.Unmarshal(sDec, decodedEncounterInfo); err != nil {
+	if err := unmarshalClientProto(sDec, decodedEncounterInfo); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeEncounter("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -394,9 +409,29 @@ func decodeEncounter(ctx context.Context, sDec []byte, username string, timestam
 	return decoder.UpdatePokemonRecordWithEncounterProto(ctx, dbDetails, decodedEncounterInfo, username, timestampMs)
 }
 
-func decodeDiskEncounter(ctx context.Context, sDec []byte, username string) string {
+func decodeDiskEncounter(ctx context.Context, request []byte, sDec []byte, username string) string {
+	if len(request) == 0 {
+		// The request carries the encounter id, fort id and fort location —
+		// without it the encounter cannot be placed. len covers a missing
+		// request regardless of ingest path: gRPC leaves it nil, and the
+		// HTTP path's decodeBase64Pooled("") also returns nil.
+		statsCollector.IncDecodeDiskEncounter("error", "request_missing")
+		return "DiskEncounter without request proto - ignored"
+	}
+	decodedRequest := &pogo.DiskEncounterProto{}
+	if err := unmarshalClientProto(request, decodedRequest); err != nil {
+		log.Errorf("Failed to parse DiskEncounterProto %s", err)
+		statsCollector.IncDecodeDiskEncounter("error", "request_parse")
+		return fmt.Sprintf("Failed to parse %s", err)
+	}
+
+	if decodedRequest.EncounterId == 0 {
+		statsCollector.IncDecodeDiskEncounter("error", "request_no_encounter_id")
+		return "DiskEncounter request without encounter id - ignored"
+	}
+
 	decodedEncounterInfo := &pogo.DiskEncounterOutProto{}
-	if err := proto.Unmarshal(sDec, decodedEncounterInfo); err != nil {
+	if err := unmarshalClientProto(sDec, decodedEncounterInfo); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeDiskEncounter("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -410,12 +445,12 @@ func decodeDiskEncounter(ctx context.Context, sDec []byte, username string) stri
 	}
 
 	statsCollector.IncDecodeDiskEncounter("ok", "")
-	return decoder.UpdatePokemonRecordWithDiskEncounterProto(ctx, dbDetails, decodedEncounterInfo, username)
+	return decoder.UpdatePokemonRecordWithDiskEncounterProto(ctx, dbDetails, decodedRequest, decodedEncounterInfo, username)
 }
 
 func decodeStartIncident(ctx context.Context, sDec []byte) string {
 	decodedIncident := &pogo.StartIncidentOutProto{}
-	if err := proto.Unmarshal(sDec, decodedIncident); err != nil {
+	if err := unmarshalClientProto(sDec, decodedIncident); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeStartIncident("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -435,7 +470,7 @@ func decodeStartIncident(ctx context.Context, sDec []byte) string {
 func decodeOpenInvasion(ctx context.Context, request []byte, payload []byte) string {
 	decodeOpenInvasionRequest := &pogo.OpenInvasionCombatSessionProto{}
 
-	if err := proto.Unmarshal(request, decodeOpenInvasionRequest); err != nil {
+	if err := unmarshalClientProto(request, decodeOpenInvasionRequest); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeOpenInvasion("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -445,7 +480,7 @@ func decodeOpenInvasion(ctx context.Context, request []byte, payload []byte) str
 	}
 
 	decodedOpenInvasionResponse := &pogo.OpenInvasionCombatSessionOutProto{}
-	if err := proto.Unmarshal(payload, decodedOpenInvasionResponse); err != nil {
+	if err := unmarshalClientProto(payload, decodedOpenInvasionResponse); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		statsCollector.IncDecodeOpenInvasion("error", "parse")
 		return fmt.Sprintf("Failed to parse %s", err)
@@ -462,10 +497,47 @@ func decodeOpenInvasion(ctx context.Context, request []byte, payload []byte) str
 	return decoder.UpdateIncidentLineup(ctx, dbDetails, decodeOpenInvasionRequest, decodedOpenInvasionResponse)
 }
 
+// extractFortMapPokemon collects a fort's lure pokemon as RawMapPokemonData,
+// with placement taken from the enclosing fort — the nested MapPokemonProto's
+// own lat/lon are zero on the wire. Current clients deliver lure pokemon in
+// the repeated ActiveFortPokemon wrapper (SpawnType LURE; POWER_UP entries
+// are not lures); older payloads used the singular ActivePokemon field. Both
+// are honored, deduplicated by encounter ID.
+func extractFortMapPokemon(fort *pogo.PokemonFortProto, cellId uint64, timestampMs int64) []decoder.RawMapPokemonData {
+	var out []decoder.RawMapPokemonData
+	add := func(mapPokemon *pogo.MapPokemonProto) {
+		for i := range out {
+			if out[i].Data.EncounterId == mapPokemon.EncounterId {
+				return
+			}
+		}
+		out = append(out, decoder.RawMapPokemonData{
+			Cell:      cellId,
+			Data:      mapPokemon,
+			Timestamp: timestampMs,
+			FortId:    fort.FortId,
+			Lat:       fort.Latitude,
+			Lon:       fort.Longitude,
+		})
+	}
+	if fort.ActivePokemon != nil {
+		add(fort.ActivePokemon)
+	}
+	for _, wrapper := range fort.ActiveFortPokemon {
+		if wrapper.GetSpawnType() != pogo.FortPokemonProto_LURE {
+			continue
+		}
+		if mapPokemon := wrapper.GetPokemonProto(); mapPokemon != nil {
+			add(mapPokemon)
+		}
+	}
+	return out
+}
+
 func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder.ScanParameters) string {
 	decodedGmo := &pogo.GetMapObjectsOutProto{}
 
-	if err := proto.Unmarshal(protoData.Data, decodedGmo); err != nil {
+	if err := unmarshalClientProto(protoData.Data, decodedGmo); err != nil {
 		statsCollector.IncDecodeGMO("error", "parse")
 		log.Errorf("Failed to parse %s", err)
 	}
@@ -515,9 +587,7 @@ func decodeGMO(ctx context.Context, protoData *ProtoData, scanParameters decoder
 				}
 			}
 
-			if fort.ActivePokemon != nil {
-				newMapPokemon = append(newMapPokemon, decoder.RawMapPokemonData{Cell: mapCell.S2CellId, Data: fort.ActivePokemon, Timestamp: mapCell.AsOfTimeMs})
-			}
+			newMapPokemon = append(newMapPokemon, extractFortMapPokemon(fort, mapCell.S2CellId, mapCell.AsOfTimeMs)...)
 		}
 		for _, mon := range mapCell.WildPokemon {
 			newWildPokemon = append(newWildPokemon, decoder.RawWildPokemonData{Cell: mapCell.S2CellId, Data: mon, Timestamp: mapCell.AsOfTimeMs})
@@ -587,14 +657,14 @@ func isCellNotEmpty(mapCell *pogo.ClientMapCellProto) bool {
 
 func decodeGetContestData(ctx context.Context, request []byte, data []byte) string {
 	var decodedContestData pogo.GetContestDataOutProto
-	if err := proto.Unmarshal(data, &decodedContestData); err != nil {
+	if err := unmarshalClientProto(data, &decodedContestData); err != nil {
 		log.Errorf("Failed to parse GetContestDataOutProto %s", err)
 		return fmt.Sprintf("Failed to parse GetContestDataOutProto %s", err)
 	}
 
 	var decodedContestDataRequest pogo.GetContestDataProto
 	if request != nil {
-		if err := proto.Unmarshal(request, &decodedContestDataRequest); err != nil {
+		if err := unmarshalClientProto(request, &decodedContestDataRequest); err != nil {
 			log.Errorf("Failed to parse GetContestDataProto %s", err)
 			return fmt.Sprintf("Failed to parse GetContestDataProto %s", err)
 		}
@@ -604,7 +674,7 @@ func decodeGetContestData(ctx context.Context, request []byte, data []byte) stri
 
 func decodeGetPokemonSizeContestEntry(ctx context.Context, request []byte, data []byte) string {
 	var decodedPokemonSizeContestEntry pogo.GetPokemonSizeLeaderboardEntryOutProto
-	if err := proto.Unmarshal(data, &decodedPokemonSizeContestEntry); err != nil {
+	if err := unmarshalClientProto(data, &decodedPokemonSizeContestEntry); err != nil {
 		log.Errorf("Failed to parse GetPokemonSizeLeaderboardEntryOutProto %s", err)
 		return fmt.Sprintf("Failed to parse GetPokemonSizeLeaderboardEntryOutProto %s", err)
 	}
@@ -615,7 +685,7 @@ func decodeGetPokemonSizeContestEntry(ctx context.Context, request []byte, data 
 
 	var decodedPokemonSizeContestEntryRequest pogo.GetPokemonSizeLeaderboardEntryProto
 	if request != nil {
-		if err := proto.Unmarshal(request, &decodedPokemonSizeContestEntryRequest); err != nil {
+		if err := unmarshalClientProto(request, &decodedPokemonSizeContestEntryRequest); err != nil {
 			log.Errorf("Failed to parse GetPokemonSizeLeaderboardEntryOutProto %s", err)
 			return fmt.Sprintf("Failed to parse GetPokemonSizeLeaderboardEntryOutProto %s", err)
 		}
@@ -626,14 +696,14 @@ func decodeGetPokemonSizeContestEntry(ctx context.Context, request []byte, data 
 
 func decodeGetStationDetails(ctx context.Context, request []byte, data []byte) string {
 	var decodedGetStationDetails pogo.GetStationedPokemonDetailsOutProto
-	if err := proto.Unmarshal(data, &decodedGetStationDetails); err != nil {
+	if err := unmarshalClientProto(data, &decodedGetStationDetails); err != nil {
 		log.Errorf("Failed to parse GetStationedPokemonDetailsOutProto %s", err)
 		return fmt.Sprintf("Failed to parse GetStationedPokemonDetailsOutProto %s", err)
 	}
 
 	var decodedGetStationDetailsRequest pogo.GetStationedPokemonDetailsProto
 	if request != nil {
-		if err := proto.Unmarshal(request, &decodedGetStationDetailsRequest); err != nil {
+		if err := unmarshalClientProto(request, &decodedGetStationDetailsRequest); err != nil {
 			log.Errorf("Failed to parse GetStationedPokemonDetailsProto %s", err)
 			return fmt.Sprintf("Failed to parse GetStationedPokemonDetailsProto %s", err)
 		}
@@ -651,14 +721,14 @@ func decodeGetStationDetails(ctx context.Context, request []byte, data []byte) s
 
 func decodeTappable(ctx context.Context, request, data []byte, username string, timestampMs int64) string {
 	var tappable pogo.ProcessTappableOutProto
-	if err := proto.Unmarshal(data, &tappable); err != nil {
+	if err := unmarshalClientProto(data, &tappable); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		return fmt.Sprintf("Failed to parse ProcessTappableOutProto %s", err)
 	}
 
 	var tappableRequest pogo.ProcessTappableProto
 	if request != nil {
-		if err := proto.Unmarshal(request, &tappableRequest); err != nil {
+		if err := unmarshalClientProto(request, &tappableRequest); err != nil {
 			log.Errorf("Failed to parse %s", err)
 			return fmt.Sprintf("Failed to parse ProcessTappableProto %s", err)
 		}
@@ -676,14 +746,14 @@ func decodeTappable(ctx context.Context, request, data []byte, username string, 
 
 func decodeGetEventRsvp(ctx context.Context, request []byte, data []byte) string {
 	var rsvp pogo.GetEventRsvpsOutProto
-	if err := proto.Unmarshal(data, &rsvp); err != nil {
+	if err := unmarshalClientProto(data, &rsvp); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		return fmt.Sprintf("Failed to parse GetEventRsvpsOutProto %s", err)
 	}
 
 	var rsvpRequest pogo.GetEventRsvpsProto
 	if request != nil {
-		if err := proto.Unmarshal(request, &rsvpRequest); err != nil {
+		if err := unmarshalClientProto(request, &rsvpRequest); err != nil {
 			log.Errorf("Failed to parse %s", err)
 			return fmt.Sprintf("Failed to parse GetEventRsvpsProto %s", err)
 		}
@@ -705,7 +775,7 @@ func decodeGetEventRsvp(ctx context.Context, request []byte, data []byte) string
 
 func decodeGetEventRsvpCount(ctx context.Context, data []byte) string {
 	var rsvp pogo.GetEventRsvpCountOutProto
-	if err := proto.Unmarshal(data, &rsvp); err != nil {
+	if err := unmarshalClientProto(data, &rsvp); err != nil {
 		log.Errorf("Failed to parse %s", err)
 		return fmt.Sprintf("Failed to parse GetEventRsvpCountOutProto %s", err)
 	}

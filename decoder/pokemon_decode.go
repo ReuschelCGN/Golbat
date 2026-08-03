@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/golang/geo/s2"
 	"github.com/guregu/null/v6"
-	"github.com/jellydator/ttlcache/v3"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 )
@@ -65,15 +65,41 @@ func (pokemon *Pokemon) isNewRecord() bool {
 	return pokemon.newRecord
 }
 
+const (
+	// pokemonUnverifiedTTL (+ jitter) replaces the flat cache-default TTL
+	// for pokemon without a verified despawn. The jitter spreads
+	// restart-synchronized cohorts (preload + cold-cache ingest all
+	// stamped in the same few minutes) so their expiry an hour later
+	// arrives as a stream of tree deletes and eviction events rather than
+	// one burst.
+	pokemonUnverifiedTTL       = 55 * time.Minute
+	pokemonUnverifiedTTLJitter = 10 * time.Minute
+)
+
 func (pokemon *Pokemon) remainingDuration(now int64) time.Duration {
-	remaining := ttlcache.DefaultTTL
 	if pokemon.ExpireTimestampVerified {
 		timeLeft := 60 + pokemon.ExpireTimestamp.ValueOrZero() - now
-		if timeLeft > 1 {
-			remaining = time.Duration(timeLeft) * time.Second
+		if timeLeft > 60 {
+			return time.Duration(timeLeft) * time.Second
+		}
+		// At/past despawn: keep briefly for late queries rather than
+		// granting a fresh hour to a corpse.
+		return time.Minute
+	}
+	return pokemonUnverifiedTTL + rand.N(pokemonUnverifiedTTLJitter)
+}
+
+// encounterStatsDuration is the TTL for the encounter-dedup stats cache.
+// Distinct from the pokemon-cache TTL: past-despawn and unverified entries
+// must keep the cache's full default window so late or retried protos still
+// deduplicate instead of inflating per-area encounter/shiny stats.
+func (pokemon *Pokemon) encounterStatsDuration(now int64) time.Duration {
+	if pokemon.ExpireTimestampVerified {
+		if timeLeft := 60 + pokemon.ExpireTimestamp.ValueOrZero() - now; timeLeft > 60 {
+			return time.Duration(timeLeft) * time.Second
 		}
 	}
-	return remaining
+	return 0 // the encounter cache interprets 0 as its default TTL
 }
 
 func (pokemon *Pokemon) addWildPokemon(ctx context.Context, db db.DbDetails, wildPokemon *pogo.WildPokemonProto, timestampMs int64, trustworthyTimestamp bool) {
@@ -151,52 +177,65 @@ func (pokemon *Pokemon) updateFromWild(ctx context.Context, db db.DbDetails, wil
 	pokemon.SetCellId(null.IntFrom(cellId))
 }
 
-func (pokemon *Pokemon) updateFromMap(ctx context.Context, db db.DbDetails, mapPokemon *pogo.MapPokemonProto, cellId int64, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, timestampMs int64, username string) {
+// updateFromMap applies a GMO lure sighting (fort.ActivePokemon) to this
+// pokemon. The fort's identity and coordinates are captured at GMO
+// extraction (RawMapPokemonData), so placement never depends on the
+// pokestop cache. Returns true when the record changed and needs saving.
+func (pokemon *Pokemon) updateFromMap(ctx context.Context, db db.DbDetails, mapPokemon RawMapPokemonData, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, username string) bool {
+	if pokemon.isNewRecord() {
+		pokemon.SetIsEvent(0)
+		pokemon.SetPokestopId(null.StringFrom(mapPokemon.FortId))
+		pokemon.SetLat(mapPokemon.Lat)
+		pokemon.SetLon(mapPokemon.Lon)
+		pokemon.SetSeenType(null.StringFrom(SeenType_LureWild))
 
-	if !pokemon.isNewRecord() {
-		// Do not ever overwrite lure details based on seeing it again in the GMO
-		return
+		if mapPokemon.Data.PokemonDisplay != nil {
+			pokemon.setPokemonDisplay(int16(mapPokemon.Data.PokedexTypeId), mapPokemon.Data.PokemonDisplay)
+			pokemon.recomputeCpIfNeeded(ctx, db, weather)
+			// The mapPokemon and nearbyPokemon GMOs don't contain actual shininess.
+			// shiny = mapPokemon.pokemonDisplay.shiny
+		} else {
+			log.Warnf("[POKEMON] MapPokemonProto missing PokemonDisplay for %d", pokemon.Id)
+		}
+		pokemon.SetUsername(null.StringFrom(username))
+
+		if mapPokemon.Data.ExpirationTimeMs > 0 {
+			pokemon.SetExpireTimestamp(null.IntFrom(mapPokemon.Data.ExpirationTimeMs / 1000))
+			pokemon.SetExpireTimestampVerified(true)
+			// if we have cached an encounter for this pokemon, update the TTL.
+			encounterCache.UpdateTTL(uint64(pokemon.Id), pokemon.encounterStatsDuration(mapPokemon.Timestamp/1000))
+		} else {
+			pokemon.SetExpireTimestampVerified(false)
+		}
+		pokemon.SetCellId(null.IntFrom(int64(mapPokemon.Cell)))
+		return true
 	}
 
-	pokemon.SetIsEvent(0)
-
-	pokemon.Id = Uint64Str(mapPokemon.EncounterId)
-
-	spawnpointId := mapPokemon.SpawnpointId
-
-	pokestop, unlock, _ := getPokestopRecordReadOnly(ctx, db, spawnpointId, "updateFromMap")
-	if pokestop == nil {
-		// Unrecognised pokestop
-		return
+	// Existing record: the GMO contributes only what it alone knows — the
+	// verified despawn time. Never touch encounter data and never downgrade
+	// lure_encounter to lure_wild.
+	switch pokemon.SeenType.ValueOrZero() {
+	case SeenType_LureWild, SeenType_LureEncounter:
+	default:
+		return false
 	}
-	pokemon.SetPokestopId(null.StringFrom(pokestop.Id))
-	pokemon.SetLat(pokestop.Lat)
-	pokemon.SetLon(pokestop.Lon)
-	pokemon.SetSeenType(null.StringFrom(SeenType_LureWild))
-	unlock()
 
-	if mapPokemon.PokemonDisplay != nil {
-		pokemon.setPokemonDisplay(int16(mapPokemon.PokedexTypeId), mapPokemon.PokemonDisplay)
-		pokemon.recomputeCpIfNeeded(ctx, db, weather)
-		// The mapPokemon and nearbyPokemon GMOs don't contain actual shininess.
-		// shiny = mapPokemon.pokemonDisplay.shiny
-	} else {
-		log.Warnf("[POKEMON] MapPokemonProto missing PokemonDisplay for %d", pokemon.Id)
+	changed := false
+	if mapPokemon.Data.ExpirationTimeMs > 0 && !pokemon.ExpireTimestampVerified {
+		pokemon.SetExpireTimestamp(null.IntFrom(mapPokemon.Data.ExpirationTimeMs / 1000))
+		pokemon.SetExpireTimestampVerified(true)
+		encounterCache.UpdateTTL(uint64(pokemon.Id), pokemon.encounterStatsDuration(mapPokemon.Timestamp/1000))
+		changed = true
+	}
+	if !pokemon.CellId.Valid {
+		pokemon.SetCellId(null.IntFrom(int64(mapPokemon.Cell)))
+		changed = true
 	}
 	if !pokemon.Username.Valid {
 		pokemon.SetUsername(null.StringFrom(username))
+		changed = true
 	}
-
-	if mapPokemon.ExpirationTimeMs > 0 && !pokemon.ExpireTimestampVerified {
-		pokemon.SetExpireTimestamp(null.IntFrom(mapPokemon.ExpirationTimeMs / 1000))
-		pokemon.SetExpireTimestampVerified(true)
-		// if we have cached an encounter for this pokemon, update the TTL.
-		encounterCache.UpdateTTL(uint64(pokemon.Id), pokemon.remainingDuration(timestampMs/1000))
-	} else {
-		pokemon.SetExpireTimestampVerified(false)
-	}
-
-	pokemon.SetCellId(null.IntFrom(cellId))
+	return changed
 }
 
 func (pokemon *Pokemon) calculateIv(a int64, d int64, s int64) {
@@ -275,6 +314,11 @@ const SeenType_LureEncounter string = "lure_encounter"                  // Pokem
 const SeenType_TappableEncounter string = "tappable_encounter"          // Pokemon has been encountered from tappable
 const SeenType_TappableLureEncounter string = "tappable_lure_encounter" // Pokemon has been encountered from a lured tappable
 
+// A lure spits out a new pokemon every 3 minutes, and each lasts 3 minutes.
+// Worst-case remaining life when a lure pokemon is first seen via a disk
+// encounter, before any GMO has supplied the real despawn time.
+const lureSpawnLifetimeSeconds = 180
+
 // setExpireTimestampFromSpawnpoint sets the current Pokemon object ExpireTimeStamp, and ExpireTimeStampVerified from the Spawnpoint
 // information held.
 // db - the database connection to be used
@@ -294,26 +338,49 @@ func (pokemon *Pokemon) setExpireTimestampFromSpawnpoint(ctx context.Context, db
 	}
 
 	pokemon.ExpireTimestampVerified = false
+
+	// Lock-free fast path: this runs once per wild/nearby pokemon and needs
+	// only the spawnpoint's despawn second. The atomic mirror avoids the
+	// entity mutex entirely — readers no longer queue behind writers that
+	// hold it across DB loads. Mirror not yet synced (0) falls through to
+	// the locked path below.
+	if sp, ok := spawnpointCache.Get(spawnId); ok {
+		if despawnSecond, known, synced := sp.DespawnSecFast(); synced {
+			if known {
+				pokemon.applyVerifiedDespawn(despawnSecond, timestampMs)
+			} else {
+				pokemon.setUnknownTimestamp(timestampMs / 1000)
+			}
+			return
+		}
+	}
+
 	spawnPoint, unlock, _ := getSpawnpointRecord(ctx, db, spawnId, "setExpireTimestampFromSpawnpoint")
 	if spawnPoint != nil && spawnPoint.DespawnSec.Valid {
 		despawnSecond := int(spawnPoint.DespawnSec.ValueOrZero())
 		unlock()
 
-		date := time.Unix(timestampMs/1000, 0)
-		secondOfHour := date.Second() + date.Minute()*60
-
-		despawnOffset := despawnSecond - secondOfHour
-		if despawnOffset < 0 {
-			despawnOffset += 3600
-		}
-		pokemon.SetExpireTimestamp(null.IntFrom(int64(timestampMs)/1000 + int64(despawnOffset)))
-		pokemon.SetExpireTimestampVerified(true)
+		pokemon.applyVerifiedDespawn(despawnSecond, timestampMs)
 	} else {
 		if unlock != nil {
 			unlock()
 		}
 		pokemon.setUnknownTimestamp(timestampMs / 1000)
 	}
+}
+
+// applyVerifiedDespawn converts a spawnpoint despawn second-of-hour into a
+// verified expire timestamp for this pokemon.
+func (pokemon *Pokemon) applyVerifiedDespawn(despawnSecond int, timestampMs int64) {
+	date := time.Unix(timestampMs/1000, 0)
+	secondOfHour := date.Second() + date.Minute()*60
+
+	despawnOffset := despawnSecond - secondOfHour
+	if despawnOffset < 0 {
+		despawnOffset += 3600
+	}
+	pokemon.SetExpireTimestamp(null.IntFrom(int64(timestampMs)/1000 + int64(despawnOffset)))
+	pokemon.SetExpireTimestampVerified(true)
 }
 
 func (pokemon *Pokemon) setUnknownTimestamp(now int64) {
