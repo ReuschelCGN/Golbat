@@ -130,12 +130,13 @@ func buildApiPokemonResult(pokemon *Pokemon) ApiPokemonResult {
 }
 
 // buildApiPvpRankings queries ohbem for PVP rankings. Returns a zero value when
-// PVP is disabled (ohbem == nil) or on query error.
+// PVP is disabled (no ohbem instance) or on query error.
 func buildApiPvpRankings(pokemon *Pokemon) ApiPvpRankings {
-	if ohbem == nil {
+	o := ohbem.Load()
+	if o == nil {
 		return ApiPvpRankings{}
 	}
-	pvp, err := ohbem.QueryPvPRank(int(pokemon.PokemonId),
+	pvp, err := o.QueryPvPRank(int(pokemon.PokemonId),
 		int(pokemon.Form.ValueOrZero()),
 		int(pokemon.Costume.ValueOrZero()),
 		int(pokemon.Gender.ValueOrZero()),
@@ -147,7 +148,7 @@ func buildApiPvpRankings(pokemon *Pokemon) ApiPvpRankings {
 		return ApiPvpRankings{}
 	}
 	// The hardcoded little/great/ultra keys correspond to the leagues configured
-	// in the ohbem init in decoder/main.go (~line 209). Adding a league there must
+	// in newOhbemInstance in decoder/main.go. Adding a league there must
 	// also be reflected here (and in the ApiPvpRankings struct).
 	return ApiPvpRankings{
 		Little: convertApiPvpEntries(pvp["little"]),
@@ -159,10 +160,11 @@ func buildApiPvpRankings(pokemon *Pokemon) ApiPvpRankings {
 // ApiPokemonScanResultV3 is the v3-only response envelope wrapping the matched
 // pokemon together with the spatial-index candidate counts.
 type ApiPokemonScanResultV3 struct {
-	Pokemon  []ApiPokemonResult `json:"pokemon" doc:"Matched pokemon"`
-	Examined int                `json:"examined" doc:"Candidates examined from the spatial index"`
-	Skipped  int                `json:"skipped" doc:"Candidates skipped (expired or filtered)"`
-	Total    int                `json:"total" doc:"Total candidates in the bounding box"`
+	Pokemon      []ApiPokemonResult `json:"pokemon" doc:"Matched pokemon"`
+	Examined     int                `json:"examined" doc:"Candidates examined from the spatial index"`
+	Skipped      int                `json:"skipped" doc:"Candidates skipped (expired or filtered)"`
+	Total        int                `json:"total" doc:"Total candidates in the bounding box"`
+	LimitReached bool               `json:"limit_reached" doc:"Whether the pre-filtered result list reached the effective result limit"`
 }
 
 // GetPokemonInArea2Clean runs the v2 rtree/DNF search and returns a bare array of
@@ -177,10 +179,11 @@ func GetPokemonInArea2Clean(req ApiPokemonScan2) []ApiPokemonResult {
 func GetPokemonInArea3Clean(req ApiPokemonScan3) *ApiPokemonScanResultV3 {
 	keys, examined, skipped, total := internalGetPokemonInArea3(req)
 	return &ApiPokemonScanResultV3{
-		Pokemon:  collectApiPokemonResults(keys, "API.ScanPokemon.v3.clean"),
-		Examined: examined,
-		Skipped:  skipped,
-		Total:    total,
+		Pokemon:      collectApiPokemonResults(keys, "API.ScanPokemon.v3.clean"),
+		Examined:     examined,
+		Skipped:      skipped,
+		Total:        total,
+		LimitReached: pokemonScanLimitReached(req, len(keys)),
 	}
 }
 

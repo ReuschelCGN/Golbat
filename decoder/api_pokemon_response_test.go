@@ -105,7 +105,7 @@ func goldenSnapshotPokemon() *Pokemon {
 // by every pokemon endpoint (v1/v2/v3/search), so any accidental change to a json
 // tag, field type, pointer/null handling, or field order will fail this test.
 func TestBuildApiPokemonResult_GoldenSnapshot(t *testing.T) {
-	if ohbem != nil {
+	if ohbem.Load() != nil {
 		t.Fatalf("expected ohbem to be nil in tests")
 	}
 
@@ -148,10 +148,11 @@ func TestApiPvpRankings_OmitsEmptyLeagues(t *testing.T) {
 
 func TestApiPokemonScanResultV3_WireShape(t *testing.T) {
 	res := ApiPokemonScanResultV3{
-		Pokemon:  []ApiPokemonResult{{Id: "1", PokemonId: 25}},
-		Examined: 5,
-		Skipped:  1,
-		Total:    6,
+		Pokemon:      []ApiPokemonResult{{Id: "1", PokemonId: 25}},
+		Examined:     5,
+		Skipped:      1,
+		Total:        6,
+		LimitReached: true,
 	}
 	b, err := json.Marshal(res)
 	if err != nil {
@@ -161,10 +162,13 @@ func TestApiPokemonScanResultV3_WireShape(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"pokemon", "examined", "skipped", "total"} {
+	for _, k := range []string{"pokemon", "examined", "skipped", "total", "limit_reached"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("v3 wrapper missing key %q", k)
 		}
+	}
+	if string(m["limit_reached"]) != "true" {
+		t.Errorf("limit_reached = %s, want true", m["limit_reached"])
 	}
 }
 
