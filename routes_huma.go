@@ -71,7 +71,7 @@ func registerStatusRoutes(api huma.API) {
 		Method:        http.MethodGet,
 		Path:          "/api/status",
 		Summary:       "Server status: enabled features and scan limits",
-		Description:   "Reports which optional Golbat features are enabled (e.g. fort_in_memory) and the server's effective scan result caps, so map consumers can detect capabilities and clamp request limits without probing gated endpoints.",
+		Description:   "Reports which optional Golbat features are enabled (e.g. fort_in_memory), the server's effective scan result caps, and which optional DNF filter fields this build supports (filters), so map consumers can detect capabilities and clamp request limits without probing gated endpoints.",
 		Tags:          []string{"Status"},
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusOK,
@@ -324,19 +324,34 @@ func registerFortScanRoutes(api huma.API) {
 // maxQueryIDs caps the number of ids accepted by the by-id batch query endpoints.
 const maxQueryIDs = 500
 
-// dedupeIDs drops empty and duplicate ids while preserving order.
-func dedupeIDs(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, id := range in {
-		if id == "" {
+// dedupeIDs parses each id, dropping unparseable and duplicate ids while
+// preserving order. Subsumes the previous id == "" filter — ParseFortId
+// rejects "" too. Callers MUST cap the raw input length against
+// maxQueryIDs before calling this — parsing can only shrink the list
+// (drop malformed/duplicate entries), so checking the cap on its output
+// would let a request full of malformed ids dodge the limit entirely.
+// Parse failures are aggregated into a single log line for the whole call
+// rather than one per id: this runs once per request, not continuously,
+// so a per-event aggregator (util.DropReporter) would be overkill, but an
+// attacker-sized batch of garbage ids must not still cost one log line each.
+func dedupeIDs(in []string) []decoder.FortId {
+	seen := make(map[decoder.FortId]struct{}, len(in))
+	out := make([]decoder.FortId, 0, len(in))
+	dropped := 0
+	for _, raw := range in {
+		id, ok := decoder.ParseFortId(raw)
+		if !ok {
+			dropped++
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		if _, dup := seen[id]; dup {
 			continue
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+	}
+	if dropped > 0 {
+		log.Errorf("dedupeIDs: dropped %d unparseable fort id(s) out of %d", dropped, len(in))
 	}
 	return out
 }
@@ -374,8 +389,9 @@ type tappableByIdInput struct {
 type tappableByIdOutput struct{ Body decoder.ApiTappableResult }
 
 type pokestopPositionsInput struct {
-	// Body is the geofence: a GeoJSON geometry, a GeoJSON feature, or a Golbat
-	// fence object. Captured as raw JSON and parsed by NormaliseFenceFromBytes.
+	// Body is the geofence: a GeoJSON polygon geometry, a GeoJSON feature with
+	// one, or a Golbat fence object. Captured as raw JSON and parsed by
+	// NormaliseFenceFromBytes, which rejects non-area geometries.
 	Body json.RawMessage
 }
 type pokestopPositionsOutput struct{ Body []db2.QuestLocation }
@@ -394,10 +410,12 @@ func registerTier3Routes(api huma.API) {
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusOK,
 	}, func(ctx context.Context, in *idsQueryInput) (*gymQueryOutput, error) {
-		ids := dedupeIDs(in.Body.IDs)
-		if len(ids) > maxQueryIDs {
+		// Cap check runs on the raw request size, before parsing/dedup — see
+		// dedupeIDs's doc comment for why the order matters.
+		if len(in.Body.IDs) > maxQueryIDs {
 			return nil, huma.Error413RequestEntityTooLarge("too many ids")
 		}
+		ids := dedupeIDs(in.Body.IDs)
 		if len(ids) == 0 {
 			return &gymQueryOutput{Body: []decoder.ApiGymResult{}}, nil
 		}
@@ -438,10 +456,12 @@ func registerTier3Routes(api huma.API) {
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusOK,
 	}, func(ctx context.Context, in *idsQueryInput) (*stationQueryOutput, error) {
-		ids := dedupeIDs(in.Body.IDs)
-		if len(ids) > maxQueryIDs {
+		// Cap check runs on the raw request size, before parsing/dedup — see
+		// dedupeIDs's doc comment for why the order matters.
+		if len(in.Body.IDs) > maxQueryIDs {
 			return nil, huma.Error413RequestEntityTooLarge("too many ids")
 		}
+		ids := dedupeIDs(in.Body.IDs)
 		if len(ids) == 0 {
 			return &stationQueryOutput{Body: []decoder.ApiStationResult{}}, nil
 		}
@@ -544,9 +564,6 @@ func registerTier3Routes(api huma.API) {
 
 		out := make([]decoder.ApiGymResult, 0, len(ids))
 		for _, id := range ids {
-			if id == "" {
-				continue
-			}
 			g, unlock, err := decoder.GetGymRecordReadOnly(tctx, dbDetails, id, "API.SearchGyms")
 			if err != nil {
 				if unlock != nil {
@@ -581,8 +598,13 @@ func registerTier3Routes(api huma.API) {
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *gymByIdInput) (*gymByIdOutput, error) {
+		fortId, ok := decoder.ParseFortId(in.GymId)
+		if !ok {
+			log.Errorf("API.GetGym: unparseable fort id %q", in.GymId)
+			return nil, huma.Error404NotFound("gym not found")
+		}
 		tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		gym, unlock, err := decoder.GetGymRecordReadOnly(tctx, dbDetails, in.GymId, "API.GetGym")
+		gym, unlock, err := decoder.GetGymRecordReadOnly(tctx, dbDetails, fortId, "API.GetGym")
 		if unlock != nil {
 			defer unlock()
 		}
@@ -607,8 +629,13 @@ func registerTier3Routes(api huma.API) {
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *stationByIdInput) (*stationByIdOutput, error) {
+		fortId, ok := decoder.ParseFortId(in.StationId)
+		if !ok {
+			log.Errorf("API.GetStation: unparseable station id %q", in.StationId)
+			return nil, huma.Error404NotFound("station not found")
+		}
 		tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		station, unlock, err := decoder.GetStationRecordReadOnly(tctx, dbDetails, in.StationId, "API.GetStation")
+		station, unlock, err := decoder.GetStationRecordReadOnly(tctx, dbDetails, fortId, "API.GetStation")
 		if unlock != nil {
 			defer unlock()
 		}
@@ -633,7 +660,12 @@ func registerTier3Routes(api huma.API) {
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *pokestopByIdInput) (*pokestopByIdOutput, error) {
-		pokestop, unlock, err := decoder.PeekPokestopRecord(in.FortId, "API.GetPokestop")
+		fortId, ok := decoder.ParseFortId(in.FortId)
+		if !ok {
+			log.Errorf("API.GetPokestop: unparseable fort id %q", in.FortId)
+			return nil, huma.Error404NotFound("pokestop not found")
+		}
+		pokestop, unlock, err := decoder.PeekPokestopRecord(fortId, "API.GetPokestop")
 		if err != nil {
 			if unlock != nil {
 				unlock()
@@ -650,7 +682,7 @@ func registerTier3Routes(api huma.API) {
 		if unlock != nil {
 			unlock() // release before locking incidents
 		}
-		body.Invasions = decoder.CollectPokestopIncidents(ctx, dbDetails, in.FortId, time.Now().Unix())
+		body.Invasions = decoder.CollectPokestopIncidents(ctx, dbDetails, fortId, time.Now().Unix())
 		return &pokestopByIdOutput{Body: body}, nil
 	})
 
@@ -684,7 +716,7 @@ func registerTier3Routes(api huma.API) {
 		Method:        http.MethodPost,
 		Path:          "/api/pokestop-positions",
 		Summary:       "List pokestop positions within a geofence",
-		Description:   "Returns the positions of pokestops within the supplied geofence (geometry, feature, or Golbat fence).",
+		Description:   "Returns the positions of pokestops within the supplied geofence (a polygon geometry, a feature with one, or a Golbat fence).",
 		Tags:          []string{"Fort"},
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusAccepted,
@@ -693,7 +725,7 @@ func registerTier3Routes(api huma.API) {
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
-		response, err := decoder.GetPokestopPositions(dbDetails, fence)
+		response, err := decoder.GetPokestopPositions(ctx, dbDetails, fence)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("error retrieving pokestop positions")
 		}
@@ -702,15 +734,17 @@ func registerTier3Routes(api huma.API) {
 }
 
 type questStatusInput struct {
-	// Body is the geofence: a GeoJSON geometry, a GeoJSON feature, or a Golbat
-	// fence object. Captured as raw JSON and parsed by NormaliseFenceFromBytes.
+	// Body is the geofence: a GeoJSON polygon geometry, a GeoJSON feature with
+	// one, or a Golbat fence object. Captured as raw JSON and parsed by
+	// NormaliseFenceFromBytes, which rejects non-area geometries.
 	Body json.RawMessage
 }
 type questStatusOutput struct{ Body db2.QuestStatus }
 
 type clearQuestsInput struct {
-	// Body is the geofence: a GeoJSON geometry, a GeoJSON feature, or a Golbat
-	// fence object. Captured as raw JSON and parsed by NormaliseFenceFromBytes.
+	// Body is the geofence: a GeoJSON polygon geometry, a GeoJSON feature with
+	// one, or a Golbat fence object. Captured as raw JSON and parsed by
+	// NormaliseFenceFromBytes, which rejects non-area geometries.
 	Body json.RawMessage
 }
 type clearQuestsOutput struct{ Body StatusResponse }
@@ -724,7 +758,7 @@ func registerTier4Routes(api huma.API) {
 		Method:        http.MethodPost,
 		Path:          "/api/quest-status",
 		Summary:       "Quest status within a geofence",
-		Description:   "Returns quest completion status for pokestops within the supplied geofence (geometry, feature, or Golbat fence).",
+		Description:   "Returns quest completion status for pokestops within the supplied geofence (a polygon geometry, a feature with one, or a Golbat fence).",
 		Tags:          []string{"Quest"},
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusOK,
@@ -733,7 +767,7 @@ func registerTier4Routes(api huma.API) {
 		if err != nil {
 			return nil, huma.Error400BadRequest(err.Error())
 		}
-		status := decoder.GetQuestStatusWithGeofence(dbDetails, fence)
+		status := decoder.GetQuestStatusWithGeofence(ctx, dbDetails, fence)
 		return &questStatusOutput{Body: status}, nil
 	})
 
@@ -743,7 +777,7 @@ func registerTier4Routes(api huma.API) {
 		Method:        http.MethodPost,
 		Path:          "/api/clear-quests",
 		Summary:       "Clear quests within a geofence",
-		Description:   "Deletes quests for pokestops within the supplied geofence (geometry, feature, or Golbat fence).",
+		Description:   "Deletes quests for pokestops within the supplied geofence (a polygon geometry, a feature with one, or a Golbat fence).",
 		Tags:          []string{"Quest"},
 		Security:      []map[string][]string{{securitySchemeName: {}}},
 		DefaultStatus: http.StatusAccepted,
@@ -758,8 +792,11 @@ func registerTier4Routes(api huma.API) {
 
 		log.Debugf("Clear quests %+v", fence)
 		startTime := time.Now()
-		decoder.ClearQuestsWithinGeofence(tctx, dbDetails, fence)
+		err = decoder.ClearQuestsWithinGeofence(tctx, dbDetails, fence)
 		log.Infof("Clear quest took %s", time.Since(startTime))
+		if err != nil {
+			return nil, huma.Error500InternalServerError("error clearing quests")
+		}
 
 		return &clearQuestsOutput{Body: StatusResponse{Status: "ok"}}, nil
 	})
@@ -817,7 +854,11 @@ func registerTier4Routes(api huma.API) {
 		if ft == nil {
 			return nil, huma.Error503ServiceUnavailable("FortTracker not initialized")
 		}
-		info := ft.GetFortInfo(in.FortId)
+		fortId, ok := decoder.ParseFortId(in.FortId)
+		if !ok {
+			return nil, huma.Error404NotFound("Fort not found")
+		}
+		info := ft.GetFortInfo(fortId)
 		if info == nil {
 			return nil, huma.Error404NotFound("Fort not found")
 		}
