@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,7 +17,6 @@ import (
 	db2 "golbat/db"
 	"golbat/decoder"
 	"golbat/external"
-	pb "golbat/grpc"
 	"golbat/stats_collector"
 	"golbat/webhooks"
 
@@ -29,14 +29,25 @@ import (
 	"github.com/jmoiron/sqlx"
 	log "github.com/sirupsen/logrus"
 	ginlogrus "github.com/toorop/gin-logrus"
-	"google.golang.org/grpc"
 )
 
 var db *sqlx.DB
 var dbDetails db2.DbDetails
-var statsCollector stats_collector.StatsCollector
+
+// statsCollector is seeded with a noop in its own initializer, matching
+// decoder's and db's: decode.go, routes.go and grpc_server_raw.go all call
+// straight through with no nil check. Nothing reaches those before main()
+// assigns the real collector below — the HTTP/gRPC listeners that would
+// drive them start well after this line runs — but the guarantee is
+// cheaper to hold than to keep re-deriving that reachability argument by
+// hand every time one of those call sites gets a new caller.
+var statsCollector stats_collector.StatsCollector = stats_collector.NewNoopStatsCollector()
 
 func main() {
+	configPath := flag.String("config", config.DefaultConfigPath, "path to the TOML config file")
+	flag.StringVar(configPath, "c", config.DefaultConfigPath, "path to the TOML config file (shorthand)")
+	flag.Parse()
+
 	var wg sync.WaitGroup
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
@@ -47,7 +58,7 @@ func main() {
 		watchForShutdown(ctx, cancelFn)
 	}()
 
-	cfg, err := config.ReadConfig()
+	cfg, err := config.ReadConfig(*configPath)
 	if err != nil {
 		panic(err)
 	}
@@ -292,6 +303,10 @@ func main() {
 	// FortInMemory: enables rtree spatial lookups (only loads forts)
 	fortInMemory := cfg.FortInMemory
 
+	// Rows written at 0,0 while the game withheld wild-pokemon coordinates:
+	// fix them from their ids before the cache is warmed from the table.
+	decoder.RepairZeroLocationSpawnpoints(dbDetails)
+
 	if cfg.Preload {
 		// Full preload: loads forts, stations, spawnpoints into cache
 		// Registers forts with fort tracker, optionally builds rtree
@@ -323,24 +338,16 @@ func main() {
 				log.Fatalf("failed to listen: %v", err)
 			}
 
-			// Initialize gRPC Prometheus metrics if enabled
-			var grpcServerOpts []grpc.ServerOption
+			var srvMetrics *grpcprom.ServerMetrics
 			if cfg.Prometheus.Enabled {
-				srvMetrics := grpcprom.NewServerMetrics(
+				srvMetrics = grpcprom.NewServerMetrics(
 					grpcprom.WithServerHandlingTimeHistogram(
 						grpcprom.WithHistogramBuckets(cfg.Prometheus.BucketSize),
 					),
 				)
-				grpcServerOpts = append(grpcServerOpts,
-					grpc.UnaryInterceptor(srvMetrics.UnaryServerInterceptor()),
-					grpc.StreamInterceptor(srvMetrics.StreamServerInterceptor()),
-				)
-				srvMetrics.InitializeMetrics(grpc.NewServer(grpcServerOpts...))
 			}
 
-			s := grpc.NewServer(grpcServerOpts...)
-			pb.RegisterRawProtoServer(s, &grpcRawServer{})
-			pb.RegisterPokemonServer(s, &grpcPokemonServer{})
+			s := newGrpcServer(srvMetrics)
 			log.Printf("grpc server listening at %v", lis.Addr())
 			if err := s.Serve(lis); err != nil {
 				log.Fatalf("failed to serve: %v", err)

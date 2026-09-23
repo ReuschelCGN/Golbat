@@ -18,6 +18,8 @@ routes.go            — HTTP route handlers (raw ingest, API endpoints)
 raw_limiter.go       — Bounded raw-processing concurrency (semaphore + shed)
 decode.go            — Proto method dispatcher, GMO decoder
 grpc_server_raw.go   — gRPC raw proto receiver
+grpc_server_api.go   — GolbatApi gRPC service (pokemon + fort scans) and newGrpcServer()
+grpc_auth.go         — api_secret unary interceptor for GolbatApi methods
 decoder/
   main.go            — Cache/queue initialization, raw data types
   sharded_cache.go   — Generic sharded TTL cache
@@ -28,6 +30,7 @@ decoder/
   <entity>_decode.go — Proto → entity field mapping
   <entity>_process.go — High-level proto processing (FortDetails, encounters, etc.)
   api_<entity>.go    — API result structs, scan endpoints, DNF filters
+  api_grpc_<entity>.go — proto ⇄ Api struct converters and Grpc* entry points
   pokemonRtree.go    — Pokemon spatial index + lookup cache
   fortRtree.go       — Fort spatial index + lookup cache
   fort_tracker.go    — In-memory fort lifecycle tracking via S2 cells (async worker)
@@ -68,6 +71,18 @@ When the queue is full, packets are shed with aggregated once-per-second
 logging and a `golbat_raw_packets_shed_total` counter — bounded loss under
 overload instead of unbounded goroutine pileup on internal locks.
 
+### gRPC API
+
+The same listener also serves `GolbatApi` (`grpc/api.proto`): `ScanPokemon`,
+`GetPokemon`, `ScanGyms`, `ScanPokestops`, `ScanStations`, `ScanForts`. Each
+request converts to the HTTP request struct (`decoder/api_grpc_*.go`) and runs
+the same scan code as the Huma endpoint; results mirror the `Api*Result`
+structs field for field (`decoder/api_grpc_parity_test.go` fails if either
+side gains a field the other lacks). Auth is `api_secret` via the
+`x-golbat-secret` metadata key (`grpc_auth.go`), never `raw_bearer`. Fort
+scans return `FailedPrecondition` without `fort_in_memory`. Server reflection
+is registered so `grpcurl`/`ghz` work without proto files.
+
 ### Dispatch (`decode.go`)
 
 `decode()` switches on `pogo.Method` to route each proto type:
@@ -103,13 +118,13 @@ Every entity follows the same pattern:
 
 ```go
 type PokestopData struct {    // Copyable data fields with db tags
-    Id   string  `db:"id"`
+    Id   FortId  `db:"id"`
     Name null.String `db:"name"`
     // ... all persisted columns
 }
 
 type Pokestop struct {
-    mu TrackedMutex[string] `db:"-"`  // Entity-level mutex
+    mu TrackedMutex[FortId] `db:"-"`  // Entity-level mutex
     PokestopData                       // Embedded — copied for queue snapshots
     dirty     bool     `db:"-"`        // Needs DB write
     newRecord bool     `db:"-"`        // INSERT vs UPDATE
@@ -125,10 +140,10 @@ type Pokestop struct {
 
 | Entity | Cache Key | Cache Type | Queue Key | ID Type |
 |--------|-----------|------------|-----------|---------|
-| Pokestop | string (fort ID) | Sharded | string | string |
-| Gym | string (fort ID) | Sharded | string | string |
+| Pokestop | FortId | Sharded | FortId | FortId |
+| Gym | FortId | Sharded | FortId | FortId |
 | Pokemon | uint64 (encounter ID) | Sharded | uint64 | uint64 |
-| Station | string (station ID) | Sharded | string | string |
+| Station | FortId | Sharded | FortId | FortId |
 | Spawnpoint | int64 (spawn ID) | Sharded | int64 | int64 |
 | Incident | string (incident ID) | TTL | string | string |
 | Weather | int64 (S2 cell ID) | TTL | — | int64 |
@@ -215,7 +230,7 @@ Each entity type has a `TypedQueue[K, T]` that batches and coalesces writes:
 
 2. **Dispatch**: A processing loop checks for entries whose `ReadyAt` time has passed, moves them to a batch buffer.
 
-3. **Flush**: When the batch reaches `BatchSize` (default 50) or `BatchTimeout` (default 100ms) elapses, the batch is flushed via a bulk `INSERT ... ON DUPLICATE KEY UPDATE` SQL statement.
+3. **Flush**: When the batch reaches `BatchSize` (default 50) or `BatchTimeout` (default 100ms) elapses, the batch is flushed via a bulk `INSERT ... ON DUPLICATE KEY UPDATE` SQL statement. Before flushing, entries are sorted by key for deterministic lock ordering, which avoids deadlocks when two batches touch overlapping rows. Queue keys are `comparable`, not `cmp.Ordered` (`FortId` is a fixed-width struct, which no ordered constraint admits), so each queue supplies an explicit `KeyCompare func(a, b K) int` — `cmp.Compare` for scalar keys, `FortId.Compare` for fort ids. `FortId.Compare` orders identically to the varchar column, so this sort — and the deadlock avoidance it gives — is unchanged from when fort ids were strings.
 
 4. **Concurrency**: All queues share a `SharedLimiter` that caps total concurrent DB writers (default 50). This prevents overwhelming the database connection pool.
 
@@ -308,7 +323,7 @@ The fort tracker detects when forts are removed from the game or converted betwe
 ```
 FortTracker
   ├── cells: map[uint64]*FortTrackerCellState    // S2 cell → {lastSeen, pokestops set, gyms set}
-  └── forts: map[string]*FortTrackerLastSeen      // fort ID → {cellId, lastSeen, isGym}
+  └── forts: map[FortId]*FortTrackerLastSeen      // fort ID → {cellId, lastSeen, isGym}
 ```
 
 ### Detection Flow
@@ -357,7 +372,7 @@ Enabled by `config.Config.FortInMemory`. Fort cache TTL is extended to 25 hours 
 
 **Incident data** on FortLookup is updated separately via `updatePokestopIncidentLookup()` because incidents load after pokestops during preload, and incident updates come through a different code path than pokestop updates.
 
-**Scaling caveat (fort scans are low-traffic today; this is the pre-scoped lever if that changes):** FortLookup's value layout is already right — flat scalars by value, one fetch per candidate, no pointer chain (the design the pokemon lookup converged to in the de-pointer change). The weakness at pokemon-like scan volumes would be **string keys**: ~35-byte fort IDs are hashed per Load, key-compared per bucket walk, and stored as entries in the R-tree itself (pointer-laden tree nodes; ~2M string objects in every GC mark). The fix, when a profile demands it: intern fort IDs to dense integers at save/delete and key both the tree and the lookup map by the intern ID — one change removes the hashing, the compares, and the tree/GC pointer load together.
+**Scaling caveat (fort scans are low-traffic today):** this section used to pre-scope interning fort IDs to dense integers as the lever for pokemon-like scan volumes — the weakness being ~35-byte string keys hashed per Load, key-compared per bucket walk, and stored as entries in the R-tree itself (pointer-laden tree nodes; ~2M string objects in every GC mark). That lever was evaluated and a different one taken instead: fort IDs are now `decoder.FortId`, a 17-byte `comparable` value type (`struct{ Guid [16]byte; Suffix uint8 }`) used directly as the cache key, map key, and R-tree payload, with string conversion pushed to the DB/JSON/webhook boundaries. That removes the string hashing, the per-bucket key compares, and the GC-visible key pointers this caveat described, without a global intern table. Interning fort IDs to dense integers on top of the value type remains available if fort scans ever do become hot enough to matter. See `docs/superpowers/specs/2026-08-18-fortid-value-type-design.md` for the full design record.
 
 ### Scanning and DNF Filters
 
@@ -370,7 +385,7 @@ Three API versions exist (V1/V2/V3), all following the same pattern:
 3. For each ID, load `PokemonLookup` + `PokemonPvpLookup` from lookup cache
 4. Apply DNF filter matching
 5. Collect matching IDs up to a configurable limit
-6. For matched IDs, call `peekPokemonRecordReadOnly()` to lock and build full API results
+6. For matched IDs, call `peekPokemonRecordReadOnly()` to lock and build full API results. The optional `updated_after` request field is applied here, on the locked record (`forEachLivePokemonResult`), never in the tree walk: it costs no lookup-cache bytes, and in exchange `examined`/`skipped`/`limit_reached` describe the pre-gate set. The fort collectors (`collect*Results`) apply the same gate.
 
 **DNF (Disjunctive Normal Form) Filters**: An array of filter clauses OR'd together. Each clause has AND'd conditions (IV range, level range, CP range, pokemon ID + form, PVP ranking, gender, size). A pokemon matches if ANY clause fully matches.
 
@@ -391,10 +406,14 @@ This avoids iterating all filters for every pokemon.
 4. Apply `isFortDnfMatch()` which checks fort type, then type-specific fields:
    - **Gym**: raid level, raid pokemon, raid expiry timestamp
    - **Pokestop**: quest rewards (unified AR/non-AR matching), incidents, lures, contests
-   - **Station**: battle level, battle pokemon, battle expiry
+   - **Station**: battle level, battle pokemon, battle expiry, `station_active`
+     (not inactive and inside the start/end window at filter time),
+     `battle_available` (the `is_battle_available` flag only). The three
+     lookup fields behind these sit in `FortLookup`'s tail padding — zero
+     growth, pinned by `TestFortLookupSizeUnchangedByStationAvailability`.
 5. Lock and load full entity records for matched IDs
 
-The `FortCombinedScanEndpoint` scans all three fort types in one pass and splits results by type.
+The `FortCombinedScanEndpoint` scans all three fort types in one pass and splits results by type. Each type group carries its own `limit` (clamped by `max_fort_results`); a type stops accepting matches at its limit while the walk keeps filling the others, and the walk ends when every requested type is full or the top-level `limit` (an overall cap) is hit. The response reports `examined` and `limit_reached` per type (`gyms_stats` etc.; zero for an excluded type) alongside the unchanged top-level counters; top-level `limit_reached` means any type or the overall cap was reached.
 
 #### Fort Availability (maintained, not scanned)
 
