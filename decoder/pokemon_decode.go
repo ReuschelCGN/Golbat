@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golbat/db"
+	"golbat/geo"
 	"golbat/grpc"
 	"golbat/pogo"
 	"golbat/util"
@@ -110,21 +111,52 @@ func (pokemon *Pokemon) encounterStatsDuration(now int64) time.Duration {
 	return 0 // the encounter cache interprets 0 as its default TTL
 }
 
-func (pokemon *Pokemon) addWildPokemon(ctx context.Context, db db.DbDetails, wildPokemon *pogo.WildPokemonProto, timestampMs int64, trustworthyTimestamp bool) {
+// undecodableWildPokemonIds aggregates dropped wild/encounter sightings
+// whose spawnpoint id could not be turned into a location, one log line per
+// second. Sibling of undecodableSpawnpointIds: the spawnpoint and the pokemon
+// are placed independently from the same proto.
+var undecodableWildPokemonIds util.DropReporter
+
+// unparseableSpawnpointIds aggregates dropped wild/encounter sightings whose
+// spawnpoint id is not a hex integer, one log line per second.
+var unparseableSpawnpointIds util.DropReporter
+
+// addWildPokemon applies the shared WildPokemonProto fields — location, spawn
+// id, despawn time, display — to this pokemon. Location comes from
+// wildPokemonLocation, so a proto at 0,0 places the pokemon at its spawnpoint
+// id's cell centre exactly as the spawnpoint row is placed. It returns false,
+// having changed nothing, when the spawnpoint id is not parseable or when
+// the proto is at 0,0 and the id does not decode: the sighting cannot be
+// placed and the caller must drop it. Callers therefore run it before any
+// other mutation of the record.
+func (pokemon *Pokemon) addWildPokemon(ctx context.Context, db db.DbDetails, wildPokemon *pogo.WildPokemonProto, timestampMs int64, trustworthyTimestamp bool) bool {
 	if wildPokemon.EncounterId != uint64(pokemon.Id) {
 		panic("Unmatched EncounterId")
 	}
-	pokemon.SetLat(wildPokemon.Latitude)
-	pokemon.SetLon(wildPokemon.Longitude)
 
 	spawnId, err := strconv.ParseInt(wildPokemon.SpawnPointId, 16, 64)
 	if err != nil {
-		panic(err)
+		unparseableSpawnpointIds.Report(func(dropped int64) {
+			log.Errorf("[POKEMON] dropped %d wild sighting(s) with an unparseable spawnpoint id in the last second (most recently pokemon %d, spawnpoint %q: %s)",
+				dropped, pokemon.Id, wildPokemon.SpawnPointId, err)
+		})
+		return false
 	}
+	lat, lon, ok := wildPokemonLocation(spawnId, wildPokemon)
+	if !ok {
+		undecodableWildPokemonIds.Report(func(dropped int64) {
+			log.Warnf("[POKEMON] dropped %d wild sighting(s) at 0,0 whose spawnpoint id does not decode to a level-%d cell in the last second (most recently pokemon %d, spawnpoint %s)",
+				dropped, geo.SpawnpointCellLevel, pokemon.Id, wildPokemon.SpawnPointId)
+		})
+		return false
+	}
+	pokemon.SetLat(lat)
+	pokemon.SetLon(lon)
 	pokemon.SetSpawnId(null.IntFrom(spawnId))
 
 	pokemon.setExpireTimestampFromSpawnpoint(ctx, db, timestampMs, trustworthyTimestamp)
 	pokemon.setPokemonDisplay(int16(wildPokemon.Pokemon.PokemonId), wildPokemon.Pokemon.PokemonDisplay)
+	return true
 }
 
 // wildSignificantUpdate returns true if the wild pokemon is significantly different from the current pokemon and
@@ -151,8 +183,9 @@ func (pokemon *Pokemon) nearbySignificantUpdate(wildPokemon *pogo.NearbyPokemonP
 	pokemonDisplay := wildPokemon.PokemonDisplay
 	// We would accept a wild update if the pokemon has changed; or to extend an unknown spawn time that is expired
 
-	// Narrowed on both sides, as in wildSignificantUpdate above.
-	pokemonChanged := pokemon.PokemonId != int16(pokemonDisplay.DisplayId) ||
+	// Narrowed on both sides, as in wildSignificantUpdate above. The species
+	// is PokedexNumber: PokemonDisplay.DisplayId carries the encounter id.
+	pokemonChanged := pokemon.PokemonId != int16(wildPokemon.PokedexNumber) ||
 		int64OrZero(pokemon.Form) != narrowUint16(int64(pokemonDisplay.Form)) ||
 		int64OrZero(pokemon.Weather) != narrowUint8(int64(pokemonDisplay.WeatherBoostedCondition)) ||
 		int64OrZero(pokemon.Costume) != narrowUint8(int64(pokemonDisplay.Costume)) ||
@@ -176,16 +209,22 @@ func (pokemon *Pokemon) nearbySignificantUpdate(wildPokemon *pogo.NearbyPokemonP
 	return false
 }
 
-func (pokemon *Pokemon) updateFromWild(ctx context.Context, db db.DbDetails, wildPokemon *pogo.WildPokemonProto, cellId int64, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, timestampMs int64, username string) {
+// updateFromWild applies a GMO wild sighting. It returns false, with the
+// record untouched, when the sighting cannot be placed (see addWildPokemon);
+// the caller must then skip the save.
+func (pokemon *Pokemon) updateFromWild(ctx context.Context, db db.DbDetails, wildPokemon *pogo.WildPokemonProto, cellId int64, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, timestampMs int64, username string) bool {
+	if !pokemon.addWildPokemon(ctx, db, wildPokemon, timestampMs, true) {
+		return false
+	}
 	pokemon.SetIsEvent(0)
 	switch pokemon.SeenType.Code {
 	case SeenTypeCodeUnset, SeenTypeCodeCell, SeenTypeCodeNearbyStop:
 		pokemon.SetSeenType(SeenTypeCodeWild)
 	}
-	pokemon.addWildPokemon(ctx, db, wildPokemon, timestampMs, true)
 	pokemon.recomputeCpIfNeeded(ctx, db, weather)
 	pokemon.SetCellId(null.IntFrom(cellId))
 	pokemon.setUsernameIfStored(username)
+	return true
 }
 
 // updateFromMap applies a GMO lure sighting (fort.ActivePokemon) to this
@@ -303,68 +342,75 @@ func (pokemon *Pokemon) calculateIv(a int64, d int64, s int64) {
 // organised by, and so the level nearby pokemon cells are expressed at.
 const gmoCellLevel = 15
 
-func (pokemon *Pokemon) updateFromNearby(ctx context.Context, db db.DbDetails, nearbyPokemon *pogo.NearbyPokemonProto, cellId int64, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, timestampMs int64, username string) {
-	pokemon.SetIsEvent(0)
-	pokestopId := nearbyPokemon.FortId
-	pokemon.setPokemonDisplay(int16(nearbyPokemon.PokedexNumber), nearbyPokemon.PokemonDisplay)
-	pokemon.recomputeCpIfNeeded(ctx, db, weather)
+// updateFromNearby applies a GMO nearby sighting. A pokemon attached to a fort
+// is placed at that pokestop; a fort-less one (a cell pokemon) at its cell
+// centre. It returns false, with the record untouched, when there is nowhere
+// to place it: the pokestop is unknown or has no location, or a cell pokemon
+// has no cell. The caller must then skip the save; a later GMO can place it
+// once the pokestop is known. A pokemon already placed more precisely (wild,
+// encounter, lure) keeps its location and takes only the display.
+func (pokemon *Pokemon) updateFromNearby(ctx context.Context, db db.DbDetails, nearbyPokemon *pogo.NearbyPokemonProto, cellId int64, weather map[int64]pogo.GameplayWeatherProto_WeatherCondition, timestampMs int64, username string) bool {
+	applyDisplay := func() {
+		pokemon.SetIsEvent(0)
+		pokemon.setPokemonDisplay(int16(nearbyPokemon.PokedexNumber), nearbyPokemon.PokemonDisplay)
+		pokemon.recomputeCpIfNeeded(ctx, db, weather)
+	}
 
 	var lat, lon float64
 	overrideLatLon := pokemon.isNewRecord()
-	useCellLatLon := true
-	if pokestopId != "" {
+	seenType := SeenTypeCodeCell
+	var fortId FortId
+	if pokestopId := nearbyPokemon.FortId; pokestopId != "" {
 		switch pokemon.SeenType.Code {
 		case SeenTypeCodeUnset, SeenTypeCodeCell:
 			overrideLatLon = true // a better estimate is available
 		case SeenTypeCodeNearbyStop:
 		default:
-			return
+			applyDisplay()
+			return true
 		}
-		fortId, ok := ParseFortId(pokestopId)
+		var ok bool
+		fortId, ok = ParseFortId(pokestopId)
 		if !ok {
 			FortIdParseDrops.Report(func(dropped int64) {
 				log.Errorf("[POKEMON] dropped %d unparseable updateFromNearby fort id(s) in the last second (most recently pokemon %d, id %q)",
 					dropped, pokemon.Id, pokestopId)
 			})
+			return false
 		}
-		var pokestop *Pokestop
-		var unlock func()
-		if ok {
-			pokestop, unlock, _ = getPokestopRecordReadOnly(ctx, db, fortId, "updateFromNearby")
-		}
+		pokestop, unlock, _ := getPokestopRecordReadOnly(ctx, db, fortId, "updateFromNearby")
 		if pokestop == nil {
-			// Unrecognised (or unparseable) pokestop, rollback changes
-			overrideLatLon = pokemon.isNewRecord()
-		} else {
-			pokemon.SetSeenType(SeenTypeCodeNearbyStop)
-			pokemon.SetPokestopId(fortId)
-			lat, lon = pokestop.Lat, pokestop.Lon
-			useCellLatLon = false
-			unlock()
-			if cellId == 0 {
-				// Snapshot entry whose fort was not listed in the response:
-				// the pokestop's own location says which cell it is in.
-				cellId = int64(s2.CellIDFromLatLng(s2.LatLngFromDegrees(lat, lon)).Parent(gmoCellLevel))
-			}
+			return false
 		}
-	}
-	if useCellLatLon {
+		lat, lon = pokestop.Lat, pokestop.Lon
+		unlock()
+		if lat == 0 && lon == 0 {
+			return false
+		}
 		if cellId == 0 {
-			// No cell to place the pokemon in (a snapshot entry with an
-			// unknown pokestop). Better nothing than the centre of cell 0.
-			return
+			// Snapshot entry whose fort was not listed in the response:
+			// the pokestop's own location says which cell it is in.
+			cellId = int64(s2.CellIDFromLatLng(s2.LatLngFromDegrees(lat, lon)).Parent(gmoCellLevel))
 		}
-		// Cell Pokemon
+		seenType = SeenTypeCodeNearbyStop
+	} else {
+		if cellId == 0 {
+			return false
+		}
 		if !overrideLatLon && pokemon.SeenType.Code != SeenTypeCodeCell {
 			// do not downgrade to nearby cell
-			return
+			applyDisplay()
+			return true
 		}
-
 		s2cell := s2.CellFromCellID(s2.CellID(cellId))
 		lat = s2cell.CapBound().RectBound().Center().Lat.Degrees()
 		lon = s2cell.CapBound().RectBound().Center().Lng.Degrees()
+	}
 
-		pokemon.SetSeenType(SeenTypeCodeCell)
+	applyDisplay()
+	pokemon.SetSeenType(seenType)
+	if seenType == SeenTypeCodeNearbyStop {
+		pokemon.SetPokestopId(fortId)
 	}
 	if overrideLatLon {
 		pokemon.SetLat(lat)
@@ -378,6 +424,7 @@ func (pokemon *Pokemon) updateFromNearby(ctx context.Context, db db.DbDetails, n
 	pokemon.SetCellId(null.IntFrom(cellId))
 	pokemon.setUnknownTimestamp(timestampMs / 1000)
 	pokemon.setUsernameIfStored(username)
+	return true
 }
 
 // SeenTypeCode is the in-memory representation of the seen_type enum column.
@@ -1175,9 +1222,14 @@ func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails
 	pokemon.setUsernameIfStored(username)
 }
 
-func (pokemon *Pokemon) updatePokemonFromEncounterProto(ctx context.Context, db db.DbDetails, encounterData *pogo.EncounterOutProto, username string, timestampMs int64) {
+// updatePokemonFromEncounterProto applies an encounter. It returns false,
+// with the record untouched, when the encounter's wild proto cannot be
+// placed (see addWildPokemon); the caller must then skip the save.
+func (pokemon *Pokemon) updatePokemonFromEncounterProto(ctx context.Context, db db.DbDetails, encounterData *pogo.EncounterOutProto, username string, timestampMs int64) bool {
+	if !pokemon.addWildPokemon(ctx, db, encounterData.Pokemon, timestampMs, false) {
+		return false
+	}
 	pokemon.SetIsEvent(0)
-	pokemon.addWildPokemon(ctx, db, encounterData.Pokemon, timestampMs, false)
 	// A tappable encounter also shows up as a normal encounter once tapped.
 	// Downgrading its seen type to a plain encounter would lose the tappable
 	// attribution, so only a pokemon that was NOT seen from a tappable is
@@ -1192,6 +1244,7 @@ func (pokemon *Pokemon) updatePokemonFromEncounterProto(ctx context.Context, db 
 		cellID := s2.CellIDFromLatLng(centerCoord).Parent(15)
 		pokemon.SetCellId(null.IntFrom(int64(cellID)))
 	}
+	return true
 }
 
 // isSeenFromTappable reports whether the pokemon's seen type is one of the
