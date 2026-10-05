@@ -80,11 +80,11 @@ func decode(ctx context.Context, method int, protoData *ProtoData) {
 		result = decodeQuest(ctx, protoData.Data, protoData.HaveAr)
 		processed = true
 	case pogo.Method_METHOD_GET_PLAYER:
-		ignore = true
+		processed = true
 	case pogo.Method_METHOD_GET_HOLOHOLO_INVENTORY:
-		ignore = true
+		processed = true
 	case pogo.Method_METHOD_CREATE_COMBAT_CHALLENGE:
-		ignore = true
+		processed = true
 	case pogo.Method(pogo.InternalPlatformClientAction_INTERNAL_PROXY_SOCIAL_ACTION):
 		if protoData.Request != nil {
 			result = decodeSocialActionWithRequest(protoData.Request, protoData.Data)
