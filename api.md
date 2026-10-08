@@ -222,11 +222,15 @@ Query pokemon with DNF (Disjunctive Normal Form) filters - more efficient filter
       "size": {"min": 0, "max": 5},
       "pvp_little": {"min": 1, "max": 100},
       "pvp_great": {"min": 1, "max": 100},
-      "pvp_ultra": {"min": 1, "max": 100}
+      "pvp_ultra": {"min": 1, "max": 100},
+      "shiny_odds": 512
     }
-  ]
+  ],
+  "shiny_player_id": "raw-player-id"
 }
 ```
+
+**Shiny filtering:** `shiny_odds` keeps only pokemon that are shiny for the player in `shiny_player_id`, when that species is shiny at 1 in `shiny_odds`. The roll is derived from the encounter id (see `derive/shiny`): the first `java.util.Random` `nextFloat`, seeded by the low 8 bytes of SHA-1(encounter id as little endian uint64 + player id), compared against `1 / shiny_odds`. `shiny_odds` of `0` never matches (a species without a released shiny); without `shiny_player_id` a `shiny_odds` condition never matches. It is checked after every other condition in the clause. Clauses are looked up per species as usual, so send one clause per odds group, with a clause without `pokemon` for every other species.
 
 **Response:** Array of [ApiPokemonResult](#apipokemonresult)
 

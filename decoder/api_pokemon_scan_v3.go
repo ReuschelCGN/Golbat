@@ -68,7 +68,7 @@ func internalGetPokemonInArea3(retrieveParameters ApiPokemonScan3) ([]uint64, in
 		}
 	}
 
-	isPokemonDnfMatch := func(pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *ApiPokemonDnfFilter3) bool {
+	isPokemonDnfMatch := func(_ uint64, pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *ApiPokemonDnfFilter3) bool {
 		if filter.Iv != nil && (int16(pokemonLookup.Iv) < filter.Iv.Min || int16(pokemonLookup.Iv) > filter.Iv.Max) ||
 			filter.StaIv != nil && (int16(pokemonLookup.Sta) < filter.StaIv.Min || int16(pokemonLookup.Sta) > filter.StaIv.Max) ||
 			filter.AtkIv != nil && (int16(pokemonLookup.Atk) < filter.AtkIv.Min || int16(pokemonLookup.Atk) > filter.AtkIv.Max) ||

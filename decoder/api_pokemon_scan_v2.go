@@ -1,14 +1,16 @@
 package decoder
 
 import (
+	"golbat/derive/shiny"
 	"golbat/geo"
 )
 
 type ApiPokemonScan2 struct {
-	Min        ApiLatLon             `json:"min" doc:"Lower-left (minimum lat/lon) corner of the bounding box to scan."`
-	Max        ApiLatLon             `json:"max" doc:"Upper-right (maximum lat/lon) corner of the bounding box to scan."`
-	Limit      int                   `json:"limit" required:"false" doc:"Maximum number of results to return; 0 uses the server default."`
-	DnfFilters []ApiPokemonDnfFilter `json:"filters" required:"false" doc:"List of filter clauses OR'd together; a pokemon matches if it satisfies any one clause."`
+	Min           ApiLatLon             `json:"min" doc:"Lower-left (minimum lat/lon) corner of the bounding box to scan."`
+	Max           ApiLatLon             `json:"max" doc:"Upper-right (maximum lat/lon) corner of the bounding box to scan."`
+	Limit         int                   `json:"limit" required:"false" doc:"Maximum number of results to return; 0 uses the server default."`
+	DnfFilters    []ApiPokemonDnfFilter `json:"filters" required:"false" doc:"List of filter clauses OR'd together; a pokemon matches if it satisfies any one clause."`
+	ShinyPlayerId string                `json:"shiny_player_id" required:"false" doc:"Raw player id the shiny_odds clause condition is rolled for. Without it a shiny_odds condition never matches."`
 }
 
 func (r ApiPokemonScan2) GetMin() geo.Location {
@@ -36,6 +38,9 @@ type ApiPokemonDnfFilter struct {
 	Little  *ApiPokemonDnfMinMax `json:"pvp_little" required:"false" doc:"Inclusive Little League PVP rank range; null means no Little League constraint."`
 	Great   *ApiPokemonDnfMinMax `json:"pvp_great" required:"false" doc:"Inclusive Great League PVP rank range; null means no Great League constraint."`
 	Ultra   *ApiPokemonDnfMinMax `json:"pvp_ultra" required:"false" doc:"Inclusive Ultra League PVP rank range; null means no Ultra League constraint."`
+	// ShinyOdds is evaluated last: it hashes the encounter id, the other
+	// conditions are field compares.
+	ShinyOdds *int32 `json:"shiny_odds" required:"false" doc:"Only pokemon shiny for shiny_player_id, rolled from the encounter id, when the species is shiny at 1 in this many; 0 never matches (no released shiny); null means no shiny constraint."`
 }
 
 func internalGetPokemonInArea2(retrieveParameters ApiPokemonScan2) ([]uint64, int, int, int) {
@@ -67,7 +72,9 @@ func internalGetPokemonInArea2(retrieveParameters ApiPokemonScan2) ([]uint64, in
 		}
 	}
 
-	isPokemonDnfMatch := func(pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *ApiPokemonDnfFilter) bool {
+	shinyPlayerId := retrieveParameters.ShinyPlayerId
+
+	isPokemonDnfMatch := func(pokemonId uint64, pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *ApiPokemonDnfFilter) bool {
 		if filter.Iv != nil && (int16(pokemonLookup.Iv) < filter.Iv.Min || int16(pokemonLookup.Iv) > filter.Iv.Max) ||
 			filter.StaIv != nil && (int16(pokemonLookup.Sta) < filter.StaIv.Min || int16(pokemonLookup.Sta) > filter.StaIv.Max) ||
 			filter.AtkIv != nil && (int16(pokemonLookup.Atk) < filter.AtkIv.Min || int16(pokemonLookup.Atk) > filter.AtkIv.Max) ||
@@ -82,6 +89,10 @@ func internalGetPokemonInArea2(retrieveParameters ApiPokemonScan2) ([]uint64, in
 		if filter.Little != nil && (pvpLookup == nil || pvpLookup.Little < filter.Little.Min || pvpLookup.Little > filter.Little.Max) ||
 			filter.Great != nil && (pvpLookup == nil || pvpLookup.Great < filter.Great.Min || pvpLookup.Great > filter.Great.Max) ||
 			filter.Ultra != nil && (pvpLookup == nil || pvpLookup.Ultra < filter.Ultra.Min || pvpLookup.Ultra > filter.Ultra.Max) {
+			return false
+		}
+
+		if filter.ShinyOdds != nil && !shiny.IsShiny(pokemonId, shinyPlayerId, *filter.ShinyOdds) {
 			return false
 		}
 		return true

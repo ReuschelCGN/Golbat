@@ -57,7 +57,7 @@ func pokemonScanLimitReached(retrieveParameters PokemonScanRetrieveParameters, r
 func internalGetPokemonInArea[F any](
 	retrieveParameters PokemonScanRetrieveParameters,
 	dnfFilters map[dnfFilterLookup][]F,
-	isPokemonDnfMatch func(pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *F) bool,
+	isPokemonDnfMatch func(pokemonId uint64, pokemonLookup *PokemonLookup, pvpLookup *PokemonPvpLookup, filter *F) bool,
 ) ([]uint64, int, int, int) {
 	start := time.Now()
 
@@ -127,7 +127,7 @@ func internalGetPokemonInArea[F any](
 				}
 
 				for x := 0; x < len(filters); x++ {
-					if isPokemonDnfMatch(pokemonLookup, pvpLookup, &filters[x]) {
+					if isPokemonDnfMatch(pokemonId, pokemonLookup, pvpLookup, &filters[x]) {
 						matched = true
 						break
 					}
