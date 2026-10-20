@@ -572,9 +572,16 @@ func (pokemon *Pokemon) applyDerivedMoves(v encounter.Draw) {
 // taken on the record's own boost branch: the two branches' IV draws almost
 // always advance the generator equally, but not when the boosted branch's
 // nextInt(12) hits Java's rejection path.
+// derivableSpecies is false for a species whose encounter values are rolled
+// per player, so the encounter id's stream says nothing about them: Minior
+// (see clearMiniorEncounterStats).
+func derivableSpecies(pokemonId int16) bool {
+	return pokemonId != int16(pogo.HoloPokemonId_MINIOR)
+}
+
 func (pokemon *Pokemon) deriveSizeAndMovesIfAbsent() {
 	strong := pokemon.IsStrong.ValueOrZero()
-	if !config.Config.DeriveIv || !deriveStrongAllowed(strong) {
+	if !config.Config.DeriveIv || !deriveStrongAllowed(strong) || !derivableSpecies(pokemon.PokemonId) {
 		return
 	}
 	v := encounter.Derive(uint64(pokemon.Id), pokemon.statsBoosted(), strong, int32(int64OrZero(pokemon.Form)))
@@ -1832,6 +1839,32 @@ func (pokemon *Pokemon) clearIv(cp bool) {
 	}
 }
 
+// clearMiniorEncounterStats removes player-specific encounter values. Minior's
+// encounter stats cannot describe the shared spawn, including across weather
+// changes. Discard old scan history too so it cannot restore those values or
+// misidentify a later encounter as Ditto. Shared map/display fields stay intact.
+func (pokemon *Pokemon) clearMiniorEncounterStats() bool {
+	if pokemon.PokemonId != int16(pogo.HoloPokemonId_MINIOR) {
+		return false
+	}
+	pokemon.clearIv(false)
+	pokemon.SetCp(null.Int{})
+	pokemon.SetLevel(null.Int{})
+	pokemon.SetMove1(null.Int{})
+	pokemon.SetMove2(null.Int{})
+	pokemon.SetHeight(null.Float{})
+	pokemon.SetWeight(null.Float{})
+	pokemon.SetSize(null.Int{})
+	pokemon.SetShiny(null.Bool{})
+	pokemon.SetPvp(null.String{})
+	if len(pokemon.GolbatInternal) != 0 {
+		pokemon.GolbatInternal = nil
+		pokemon.dirty = true
+	}
+	pokemon.scanHistory = nil
+	return true
+}
+
 // downgradeEncounterSeenType returns an encounter or lure_encounter record to
 // wild or lure_wild, for when the stats an encounter observed no longer stand:
 // a weather flip has cleared them, or replaced them with derived values.
@@ -1876,7 +1909,7 @@ func (pokemon *Pokemon) deriveIvIfAbsent() {
 		return
 	}
 	strong := pokemon.IsStrong.ValueOrZero()
-	if !deriveStrongAllowed(strong) {
+	if !deriveStrongAllowed(strong) || !derivableSpecies(pokemon.PokemonId) {
 		return
 	}
 	// IVs already settled — by an encounter, or derived on an earlier
@@ -2004,6 +2037,10 @@ func (pokemon *Pokemon) priorSighting() priorSighting {
 // caller should setPokemonDisplay prior to calling this, and pass the
 // priorSighting it captured before doing so.
 func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails, proto *pogo.PokemonProto, username string, prior priorSighting) {
+	if pokemon.clearMiniorEncounterStats() {
+		pokemon.setUsernameIfStored(username)
+		return
+	}
 	pokemon.SetShiny(null.BoolFrom(proto.PokemonDisplay.Shiny))
 	pokemon.SetCp(null.IntFrom(int64(proto.Cp)))
 	pokemon.SetMove1(null.IntFrom(int64(proto.Move1)))
@@ -2386,6 +2423,9 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 }
 
 func (pokemon *Pokemon) repopulateIv(weather int64, isStrong bool) {
+	if pokemon.clearMiniorEncounterStats() {
+		return
+	}
 	// pokemon.Weather holds the narrowed reading, so narrow the incoming one
 	// before deriving isBoosted from it (see narrowUint8). Out of range, the
 	// raw reading and the value that actually gets stored can classify

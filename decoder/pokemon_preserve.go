@@ -143,6 +143,8 @@ func PreloadPreservedPokemon(dbDetails db.DbDetails) int32 {
 			defer wg.Done()
 			currentTime := time.Now().Unix()
 			for pokemon := range jobs {
+				// Do not republish encounter stats saved by older versions.
+				pokemon.clearMiniorEncounterStats()
 				// Every unexpired pokemon is restored, verified or not (the
 				// query above excludes expired rows): a derived expiry is as
 				// good an answer as it was before the restart, and a guess is

@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"golbat/config"
+	"golbat/pogo"
 	"time"
 
 	"github.com/UnownHash/gohbem"
@@ -168,6 +169,11 @@ func buildApiPokemonResult(pokemon *Pokemon) ApiPokemonResult {
 // Both conditions are checked: ohbem is also built for CP whenever derivation
 // is on, so a non-nil instance does not mean PVP was asked for.
 func buildApiPvpRankings(pokemon *Pokemon) ApiPvpRankings {
+	// Minior has no shared encounter IVs/level to rank. Do not turn its
+	// cleared fields into a synthetic 0/0/0 ranking via ValueOrZero below.
+	if pokemon.PokemonId == int16(pogo.HoloPokemonId_MINIOR) {
+		return ApiPvpRankings{}
+	}
 	o := ohbem.Load()
 	if o == nil || !config.Config.Pvp.Enabled {
 		return ApiPvpRankings{}
