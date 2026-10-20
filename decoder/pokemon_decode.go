@@ -566,19 +566,22 @@ func (pokemon *Pokemon) applyDerivedMoves(v encounter.Draw) {
 	}
 }
 
+// derivableSpecies is false for a species whose encounter values are rolled
+// per player: Minior. Neither an encounter nor the encounter id's stream
+// describes the shared spawn, so its IVs, CP, level, moves, size, height,
+// weight and shininess are never set: not by derivation, an encounter
+// (addEncounterPokemon) or a weather flip (repopulateIv). Pokemon live at
+// most an hour, so this is go-forward only; nothing clears stored values.
+func derivableSpecies(pokemonId int16) bool {
+	return pokemonId != int16(pogo.HoloPokemonId_MINIOR)
+}
+
 // deriveSizeAndMovesIfAbsent fills whichever of size and moves are absent, for
 // the species and form the record displays, under the same exclusions as
 // deriveIvIfAbsent, on a record whose IVs are already settled. The draw is
 // taken on the record's own boost branch: the two branches' IV draws almost
 // always advance the generator equally, but not when the boosted branch's
 // nextInt(12) hits Java's rejection path.
-// derivableSpecies is false for a species whose encounter values are rolled
-// per player, so the encounter id's stream says nothing about them: Minior
-// (see clearMiniorEncounterStats).
-func derivableSpecies(pokemonId int16) bool {
-	return pokemonId != int16(pogo.HoloPokemonId_MINIOR)
-}
-
 func (pokemon *Pokemon) deriveSizeAndMovesIfAbsent() {
 	strong := pokemon.IsStrong.ValueOrZero()
 	if !config.Config.DeriveIv || !deriveStrongAllowed(strong) || !derivableSpecies(pokemon.PokemonId) {
@@ -1839,32 +1842,6 @@ func (pokemon *Pokemon) clearIv(cp bool) {
 	}
 }
 
-// clearMiniorEncounterStats removes player-specific encounter values. Minior's
-// encounter stats cannot describe the shared spawn, including across weather
-// changes. Discard old scan history too so it cannot restore those values or
-// misidentify a later encounter as Ditto. Shared map/display fields stay intact.
-func (pokemon *Pokemon) clearMiniorEncounterStats() bool {
-	if pokemon.PokemonId != int16(pogo.HoloPokemonId_MINIOR) {
-		return false
-	}
-	pokemon.clearIv(false)
-	pokemon.SetCp(null.Int{})
-	pokemon.SetLevel(null.Int{})
-	pokemon.SetMove1(null.Int{})
-	pokemon.SetMove2(null.Int{})
-	pokemon.SetHeight(null.Float{})
-	pokemon.SetWeight(null.Float{})
-	pokemon.SetSize(null.Int{})
-	pokemon.SetShiny(null.Bool{})
-	pokemon.SetPvp(null.String{})
-	if len(pokemon.GolbatInternal) != 0 {
-		pokemon.GolbatInternal = nil
-		pokemon.dirty = true
-	}
-	pokemon.scanHistory = nil
-	return true
-}
-
 // downgradeEncounterSeenType returns an encounter or lure_encounter record to
 // wild or lure_wild, for when the stats an encounter observed no longer stand:
 // a weather flip has cleared them, or replaced them with derived values.
@@ -2037,7 +2014,9 @@ func (pokemon *Pokemon) priorSighting() priorSighting {
 // caller should setPokemonDisplay prior to calling this, and pass the
 // priorSighting it captured before doing so.
 func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails, proto *pogo.PokemonProto, username string, prior priorSighting) {
-	if pokemon.clearMiniorEncounterStats() {
+	// Minior's encounter stats are the encountering player's, not the
+	// spawn's (see derivableSpecies): keep only who saw it.
+	if !derivableSpecies(pokemon.PokemonId) {
 		pokemon.setUsernameIfStored(username)
 		return
 	}
@@ -2423,7 +2402,8 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 }
 
 func (pokemon *Pokemon) repopulateIv(weather int64, isStrong bool) {
-	if pokemon.clearMiniorEncounterStats() {
+	// Nothing to restore for Minior (see derivableSpecies).
+	if !derivableSpecies(pokemon.PokemonId) {
 		return
 	}
 	// pokemon.Weather holds the narrowed reading, so narrow the incoming one

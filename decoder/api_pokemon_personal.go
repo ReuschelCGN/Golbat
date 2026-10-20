@@ -252,7 +252,7 @@ type encounterSize struct {
 // value is -1, which never matches.
 func (s *personalScan) sharedSize(id uint64, pokemonId, form int16, boosted bool, atk, def, sta, level, sizeClass int32) (encounterSize, bool) {
 	// Pumpkaboo and Gourgeist have no size model: their form is the size.
-	// Minior's encounter values are per player (clearMiniorEncounterStats).
+	// Minior's encounter values are per player (derivableSpecies).
 	if pokemonId == pumpkabooPokemonId || pokemonId == gourgeistPokemonId || pokemonId == miniorPokemonId ||
 		atk < 0 || def < 0 || sta < 0 || level < 0 {
 		return encounterSize{}, false
