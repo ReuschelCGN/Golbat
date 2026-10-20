@@ -28,6 +28,12 @@ derive_iv = true
 # disagreements.
 derive_strong = true
 
+# showcase_stddev_fallback: the per-player Biggest Showcase score (v2 scan annotate_player) needs
+# each species' weight standard deviation, which the masterfile does not export yet. With this on,
+# baseWeight/8 stands in for it, which matches the published fixtures but is not true of every
+# species. Default true; off omits the score until the masterfile has the real value.
+showcase_stddev_fallback = true
+
 # derive_despawn: give a Pokemon or tappable at a spawnpoint whose despawn time has not been
 # observed an unverified despawn time derived from the spawnpoint id, rather than a 20-minute
 # guess. Default true; turn it off only if the game changes how despawn times are placed and

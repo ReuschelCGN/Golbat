@@ -209,11 +209,33 @@ type ApiPokemonScanResultV3 struct {
 	LimitReached bool               `json:"limit_reached" doc:"Whether the pre-filtered result list reached the effective result limit"`
 }
 
+// ApiPokemonResultV2 is a v2 scan result: the shared result, plus the
+// requesting player's readings when the request sets annotate_player. The
+// player fields are v2-only, so they live here rather than on
+// ApiPokemonResult, which the gRPC Pokemon message mirrors field for field.
+type ApiPokemonResultV2 struct {
+	ApiPokemonResult
+	PlayerShiny      bool           `json:"player_shiny,omitempty" doc:"Shiny for shiny_player_id at the species' rate from roll_rates/default_shiny_odds (a known Ditto: the Ditto rule). Absent when not, or when the rate is unknown."`
+	PlayerBackground bool           `json:"player_background,omitempty" doc:"Offers shiny_player_id a background at the species' roll_rates rate. Absent when not."`
+	PlayerSize       *ApiPlayerSize `json:"player_size,omitempty" doc:"Height, weight and Biggest Showcase score shiny_player_id is shown. Absent for a Ditto, Pumpkaboo, Gourgeist, Minior, a strong pokemon, without known IVs or masterfile size data, or when the derivation does not match the record."`
+}
+
 // GetPokemonInArea2Clean runs the v2 rtree/DNF search and returns a bare array of
-// ApiPokemonResult, discarding the candidate counts (matching the v2 shape).
-func GetPokemonInArea2Clean(req ApiPokemonScan2) []ApiPokemonResult {
-	keys, _, _, _ := internalGetPokemonInArea2(req)
-	return collectApiPokemonResults(keys, "API.ScanPokemon.v2.clean", 0)
+// results, discarding the candidate counts (matching the v2 shape), annotated
+// for the request's player when it sets annotate_player.
+func GetPokemonInArea2Clean(req ApiPokemonScan2) []ApiPokemonResultV2 {
+	personal := req.personalScan()
+	keys, _, _, _ := internalGetPokemonInArea2With(req, personal)
+	annotate := req.AnnotatePlayer && personal.player != nil
+	results := make([]ApiPokemonResultV2, 0, len(keys))
+	forEachLivePokemonResult(keys, "API.ScanPokemon.v2.clean", 0, func(_ uint64, r *ApiPokemonResult) {
+		result := ApiPokemonResultV2{ApiPokemonResult: *r}
+		if annotate {
+			personal.annotate(&result)
+		}
+		results = append(results, result)
+	})
+	return results
 }
 
 // GetPokemonInArea3Clean runs the v3 rtree/DNF search and returns the matched

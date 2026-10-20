@@ -35,10 +35,11 @@ func ReadConfig(configPath string) (configDefinition, error) {
 		// false negative). DittoPool
 		// has no default: empty means the published pool
 		// (decoder/ditto_pool_remote.go).
-		DeriveIv:        true,
-		DeriveStrong:    true,
-		DeriveDespawn:   true,
-		DittoDerivation: true,
+		DeriveIv:               true,
+		DeriveStrong:           true,
+		ShowcaseStdDevFallback: true,
+		DeriveDespawn:          true,
+		DittoDerivation:        true,
 		Sentry: sentry{
 			SampleRate:       1.0,
 			TracesSampleRate: 1.0,

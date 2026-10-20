@@ -30,6 +30,8 @@ func TestPokemonScan2ShinyOdds(t *testing.T) {
 			Lon:       lon + float64(i/20)*0.0001,
 			PokemonId: species,
 			Form:      null.ValueFrom(uint16(0)),
+			// Only wild and encountered sightings take a player's rolls.
+			SeenType: SeenTypeFrom(SeenTypeCodeWild),
 		}}
 		p.ExpireTimestamp = null.ValueFrom(uint32(time.Now().Unix() + 600))
 		pokemonRtreePreloadInsert(p)

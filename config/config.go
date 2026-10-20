@@ -43,6 +43,12 @@ type configDefinition struct {
 	// leaves a strong Pokemon's values absent until a real encounter, as
 	// before; checkDerivation still scores the walk either way.
 	DeriveStrong bool `koanf:"derive_strong"`
+	// ShowcaseStdDevFallback: score a Biggest Showcase entry with a weight
+	// deviation of baseWeight/8 when the masterfile has no weightStdDev for
+	// the species. Default true. The deviation is form-specific in the game
+	// master and baseWeight/8 is not universal (UnownHash/Golbat#427); off
+	// omits the score until the masterfile carries the real value.
+	ShowcaseStdDevFallback bool `koanf:"showcase_stddev_fallback"`
 	// DeriveDespawn: give a pokemon or tappable at a spawnpoint with no
 	// observed despawn second an unverified expiry derived from its spawn id,
 	// instead of the 20-minute guess. Default true; it exists to switch the

@@ -223,16 +223,47 @@ Query pokemon with DNF (Disjunctive Normal Form) filters - more efficient filter
       "pvp_little": {"min": 1, "max": 100},
       "pvp_great": {"min": 1, "max": 100},
       "pvp_ultra": {"min": 1, "max": 100},
-      "shiny_odds": 512
+      "shiny_odds": 512,
+      "background_odds": 25,
+      "player_height": {"min": 0.0, "max": 0.24},
+      "player_weight": {"min": 13.13}
     }
   ],
-  "shiny_player_id": "raw-player-id"
+  "shiny_player_id": "raw-player-id",
+  "roll_rates": [
+    {"id": 1, "shiny_odds": 0},
+    {"id": 25, "form": 0, "shiny_odds": 64, "background_odds": 25}
+  ],
+  "default_shiny_odds": 512,
+  "annotate_player": true
 }
 ```
 
 **Shiny filtering:** `shiny_odds` keeps only pokemon that are shiny for the player in `shiny_player_id`, when that species is shiny at 1 in `shiny_odds`. The roll is derived from the encounter id (see `derive/shiny`): the first `java.util.Random` `nextFloat`, seeded by the low 8 bytes of SHA-1(encounter id as little endian uint64 + player id), compared against `1 / shiny_odds`. `shiny_odds` of `0` never matches (a species without a released shiny); without `shiny_player_id` a `shiny_odds` condition never matches. It is checked after every other condition in the clause. Clauses are looked up per species as usual, so send one clause per odds group, with a clause without `pokemon` for every other species.
 
-**Response:** Array of [ApiPokemonResult](#apipokemonresult)
+**Per-player draws:** every per-player reading comes from the same generator as the shiny roll, read in the game's order (UnownHash/Golbat#423, #424): the shiny draw (only when the species can be shiny), the background draw (only when a background is on offer), two location-card draws (only when the background hit), then the height draw and, for XXS and XXL, a band selector. Which draw a reading is at therefore depends on the species' rates, which the request carries in `roll_rates` (exact form, then the entry without `form`, then the defaults) and `default_shiny_odds`:
+
+- `roll_rates[].shiny_odds`: 1 in N; `0` means the species cannot be shiny, so no shiny draw is taken. `null` takes `default_shiny_odds`; when that is `null` too the species is treated as shiny-capable, but `player_shiny` is not annotated for it.
+- `roll_rates[].background_odds`: 1 in N; `0` (default) means no background is on offer and no background draw is taken.
+
+**Per-player conditions** (all need `shiny_player_id`, and are checked after every other condition in the clause):
+
+- `background_odds`: offers the player a background at 1 in N. Never matches a Ditto.
+- `player_height` / `player_weight`: inclusive range (an omitted bound is unbounded) of the height (m) and weight (kg) the player is shown; see `player_size` for when a pokemon has a size model.
+- `shiny_odds` on a known Ditto uses the Ditto rule whatever the odds: the third draw below 1/64.
+
+**Roll eligibility:** only wild and encountered sightings take a player's rolls. Lure, nearby and tappable sightings, a disguise Golbat has not identified as a Ditto, and costume 255 never match a per-player condition (including `shiny_odds`) and are never annotated.
+
+**`annotate_player`:** each result gains, when they apply:
+
+- `player_shiny`: shiny for the player at the species' `roll_rates`/`default_shiny_odds` rate (a known Ditto: the Ditto rule).
+- `player_background`: offers the player a background at the species' `roll_rates` rate.
+- `player_size`: `{height, weight, showcase_score}`, what the player is shown. Absent for a Ditto, Pumpkaboo, Gourgeist, Minior and strong pokemon, without known IVs or masterfile size data, and when the encounter-id derivation does not match the record's IVs, level and size class (a size event, for example). Height follows roundaboutluke's model (uniform within the size class's bounds, the XXS/XXL 5% far band) and weight adds the encounter's own Gaussian noise.
+- `showcase_score`: the Biggest Showcase score (UnownHash/Golbat#427, standard 800/150/50 coefficients, the exact `7300/41` XXL bonus), from the same float32 height and weight. It needs the species' weight standard deviation: the masterfile's `weightStdDev` when present, else `baseWeight/8` with `showcase_stddev_fallback` on (the default); otherwise it is absent. Full precision: round only for display.
+
+The annotations are added only to v2 scan results; v3, gRPC and `/api/pokemon/id` are unchanged, so a popup that refetches by id has no per-player values.
+
+**Response:** Array of [ApiPokemonResult](#apipokemonresult), plus `player_shiny`, `player_background` and `player_size` when `annotate_player` is set.
 
 ---
 
