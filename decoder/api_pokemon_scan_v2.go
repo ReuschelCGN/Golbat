@@ -51,6 +51,7 @@ type ApiPokemonDnfFilter struct {
 	BackgroundOdds *int32          `json:"background_odds" required:"false" doc:"Only pokemon offering shiny_player_id a background at 1 in this many; 0 never matches; null means no background constraint. Never matches a Ditto."`
 	PlayerHeight   *ApiFloatMinMax `json:"player_height" required:"false" doc:"Inclusive range of the height (m) shiny_player_id is shown; null means no constraint. Never matches a pokemon without a size model (see player_size)."`
 	PlayerWeight   *ApiFloatMinMax `json:"player_weight" required:"false" doc:"Inclusive range of the weight (kg) shiny_player_id is shown; null means no constraint. Never matches a pokemon without a size model (see player_size)."`
+	ShowcaseScore  *ApiFloatMinMax `json:"showcase_score" required:"false" doc:"Inclusive range of the Biggest Showcase score for what shiny_player_id is shown (at most 800 + 150 + 50 + 7300/41, about 1178); null means no constraint. Never matches a pokemon without a size model or scoring data (see player_size)."`
 }
 
 func (r ApiPokemonScan2) personalScan() *personalScan {

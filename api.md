@@ -226,7 +226,8 @@ Query pokemon with DNF (Disjunctive Normal Form) filters - more efficient filter
       "shiny_odds": 512,
       "background_odds": 25,
       "player_height": {"min": 0.0, "max": 0.24},
-      "player_weight": {"min": 13.13}
+      "player_weight": {"min": 13.13},
+      "showcase_score": {"min": 1000}
     }
   ],
   "shiny_player_id": "raw-player-id",
@@ -250,6 +251,7 @@ Query pokemon with DNF (Disjunctive Normal Form) filters - more efficient filter
 
 - `background_odds`: offers the player a background at 1 in N. Never matches a Ditto.
 - `player_height` / `player_weight`: inclusive range (an omitted bound is unbounded) of the height (m) and weight (kg) the player is shown; see `player_size` for when a pokemon has a size model.
+- `showcase_score`: inclusive range of the Biggest Showcase score for what the player is shown, the same value as `player_size.showcase_score` (at most 800 + 150 + 50 + 7300/41, about 1178). Never matches without scoring data.
 - `shiny_odds` on a known Ditto uses the Ditto rule whatever the odds: the third draw below 1/64.
 
 **Roll eligibility:** only wild and encountered sightings take a player's rolls. Lure, nearby and tappable sightings, a disguise Golbat has not identified as a Ditto, and costume 255 never match a per-player condition (including `shiny_odds`) and are never annotated.

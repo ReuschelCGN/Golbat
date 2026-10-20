@@ -451,3 +451,46 @@ func TestApiPokemonResultV2JSONIsFlat(t *testing.T) {
 		}
 	}
 }
+
+// showcase_score keeps the pokemon whose Biggest Showcase score for the
+// player is in range: the same score player_size reports.
+func TestPokemonScan2ShowcaseScore(t *testing.T) {
+	f := newPersonalFixture(t)
+	prev := config.Config.ShowcaseStdDevFallback
+	config.Config.ShowcaseStdDevFallback = true
+	t.Cleanup(func() { config.Config.ShowcaseStdDevFallback = prev })
+
+	const base = uint64(964001)
+	const count = 300
+	for i := 0; i < count; i++ {
+		f.add(base+uint64(i), 129, nil)
+	}
+	player := shiny.NewPlayer(personalPlayer)
+	ps := newPersonalScan(personalPlayer, nil, nil)
+	scores := map[uint64]float64{}
+	for i := 0; i < count; i++ {
+		id := base + uint64(i)
+		d := encounter.For(id, false, 0)
+		shared, ok := ps.sharedSize(id, 129, 0, false, d.Attack, d.Defense, d.Stamina, d.Level, d.Size)
+		if !ok {
+			t.Fatalf("pokemon %d has no size model", id)
+		}
+		draws := player.Draws(id)
+		h, w, _ := shared.personal(&draws, shiny.Rates{ShinyCapable: true})
+		scores[id], _ = shared.showcaseScore(h, w)
+	}
+	lo := 700.0
+	want := map[uint64]bool{}
+	for id, score := range scores {
+		if score >= lo {
+			want[id] = true
+		}
+	}
+	assertSameIds(t, "showcase_score", f.scan([]ApiPokemonDnfFilter{{ShowcaseScore: &ApiFloatMinMax{Min: &lo}}}, personalPlayer), want)
+
+	// No scoring data, no match.
+	config.Config.ShowcaseStdDevFallback = false
+	if got := f.scan([]ApiPokemonDnfFilter{{ShowcaseScore: &ApiFloatMinMax{Min: &lo}}}, personalPlayer); len(got) != 0 {
+		t.Errorf("showcase_score matched %d pokemon without scoring data", len(got))
+	}
+}

@@ -130,7 +130,8 @@ func (s *personalScan) drawsFor(id uint64) *shiny.Draws {
 // after its field compares, so only candidates that got that far are hashed.
 // A pokemon that takes no player rolls (RollEligible 0) matches none of them.
 func (s *personalScan) matchClause(id uint64, lookup *PokemonLookup, filter *ApiPokemonDnfFilter) bool {
-	if filter.ShinyOdds == nil && filter.BackgroundOdds == nil && filter.PlayerHeight == nil && filter.PlayerWeight == nil {
+	sized := filter.PlayerHeight != nil || filter.PlayerWeight != nil || filter.ShowcaseScore != nil
+	if filter.ShinyOdds == nil && filter.BackgroundOdds == nil && !sized {
 		return true
 	}
 	if s.player == nil || lookup.RollEligible == 0 {
@@ -140,8 +141,7 @@ func (s *personalScan) matchClause(id uint64, lookup *PokemonLookup, filter *Api
 	if lookup.PokemonId == dittoPokemonId {
 		// A known Ditto: the Ditto shiny rule, whatever the clause's odds,
 		// and never a background or a modelled size.
-		return filter.BackgroundOdds == nil && filter.PlayerHeight == nil && filter.PlayerWeight == nil &&
-			draws.DittoShiny()
+		return filter.BackgroundOdds == nil && !sized && draws.DittoShiny()
 	}
 	rates := s.rates.lookup(lookup.PokemonId, lookup.Form)
 	if filter.ShinyOdds != nil && !(rates.ShinyCapable && draws.IsShiny(*filter.ShinyOdds)) {
@@ -150,7 +150,7 @@ func (s *personalScan) matchClause(id uint64, lookup *PokemonLookup, filter *Api
 	if filter.BackgroundOdds != nil && !draws.Background(rates.ShinyCapable, *filter.BackgroundOdds) {
 		return false
 	}
-	if filter.PlayerHeight != nil || filter.PlayerWeight != nil {
+	if sized {
 		shared, ok := s.sharedSizeFromLookup(id, lookup)
 		if !ok {
 			return false
@@ -160,6 +160,12 @@ func (s *personalScan) matchClause(id uint64, lookup *PokemonLookup, filter *Api
 			filter.PlayerHeight != nil && !filter.PlayerHeight.contains(float64(height)) ||
 			filter.PlayerWeight != nil && !filter.PlayerWeight.contains(float64(weight)) {
 			return false
+		}
+		if filter.ShowcaseScore != nil {
+			score, ok := shared.showcaseScore(height, weight)
+			if !ok || !filter.ShowcaseScore.contains(score) {
+				return false
+			}
 		}
 	}
 	return true
@@ -221,8 +227,7 @@ func (s *personalScan) annotate(r *ApiPokemonResultV2) {
 		return
 	}
 	size := &ApiPlayerSize{Height: height, Weight: weight}
-	if meta, ok := shared.showcaseMetadata(); ok {
-		score := showcase.Score(height, weight, int(shared.ivSum), shared.class == encounter.SizeXXL, meta)
+	if score, ok := shared.showcaseScore(height, weight); ok {
 		size.ShowcaseScore = &score
 	}
 	r.PlayerSize = size
@@ -325,6 +330,17 @@ func (e encounterSize) at(u float64, selector func() float64) (height, weight fl
 		ratio = withNoise
 	}
 	return height, e.Weight * ratio
+}
+
+// showcaseScore is the Biggest Showcase score for the height and weight a
+// player is shown, the same value the annotation reports. ok is false when
+// the species has no scoring data (see showcaseMetadata).
+func (e encounterSize) showcaseScore(height, weight float32) (float64, bool) {
+	meta, ok := e.showcaseMetadata()
+	if !ok {
+		return 0, false
+	}
+	return showcase.Score(height, weight, int(e.ivSum), e.class == encounter.SizeXXL, meta), true
 }
 
 // showcaseMetadata is the species' Biggest Showcase normalization data. The
