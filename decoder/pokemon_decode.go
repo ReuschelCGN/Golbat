@@ -2364,6 +2364,13 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 				pokemon.clearIv(false)
 				pokemon.SetLevel(null.NewInt(0, false))
 			}
+			// A record that turns into a Minior drops the previous species' IVs
+			// and level: nothing replaces them, since Minior's encounter values
+			// are per player (see derivableSpecies).
+			if !derivableSpecies(pokemonId) {
+				pokemon.clearIv(false)
+				pokemon.SetLevel(null.NewInt(0, false))
+			}
 			pokemon.SetIsDitto(false)
 			pokemon.SetDisplayPokemonId(null.NewInt(0, false))
 			pokemon.SetDisplayPokemonForm(null.NewInt(0, false))
