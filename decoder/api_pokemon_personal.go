@@ -144,7 +144,7 @@ func (s *personalScan) matchClause(id uint64, lookup *PokemonLookup, filter *Api
 		return filter.BackgroundOdds == nil && !sized && draws.DittoShiny()
 	}
 	rates := s.rates.lookup(lookup.PokemonId, lookup.Form)
-	if filter.ShinyOdds != nil && !(rates.ShinyCapable && draws.IsShiny(*filter.ShinyOdds)) {
+    if filter.ShinyOdds != nil && (!rates.ShinyCapable || !draws.IsShiny(*filter.ShinyOdds)) {
 		return false
 	}
 	if filter.BackgroundOdds != nil && !draws.Background(rates.ShinyCapable, *filter.BackgroundOdds) {
