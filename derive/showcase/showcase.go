@@ -30,10 +30,12 @@ func (m Metadata) Denominators() (hMax, wMax float64) {
 	meanW := float32(m.BaseWeight)
 	sigma := float32(m.WeightStdDev)
 
-	ratio := h / meanH
-	scaled := meanW * ratio
-	spread := 4 * sigma
-	w := scaled + spread
+	// The conversions force each float32 rounding: Go may otherwise fuse the
+	// multiply and add into one (it does on arm64), changing Wmax.
+	ratio := float32(h / meanH)
+	scaled := float32(meanW * ratio)
+	spread := float32(4 * sigma)
+	w := float32(scaled + spread)
 	return float64(h), float64(w)
 }
 
