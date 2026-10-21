@@ -54,6 +54,10 @@ type PokemonLookup struct {
 	Gender             int8
 	Iv                 int8
 	Size               int8
+	// RollEligible is 0 when the pokemon never takes a player's roll (see
+	// rollEligible), otherwise its costume+1, or 1 for a known Ditto. It sits
+	// in what was tail padding, so the struct stays 16 bytes.
+	RollEligible uint8
 }
 
 type PokemonPvpLookup struct {
@@ -344,6 +348,7 @@ func updatePokemonLookup(pokemon *Pokemon, changePvp bool, pvpResults map[string
 		Cp:                 lookupInt16(pokemon.Cp),
 		Iv:                 lookupIv(pokemon.Iv),
 		Size:               lookupInt8(pokemon.Size),
+		RollEligible:       rollEligible(pokemon),
 	}
 	if !pokemon.IsDitto {
 		pokemonLookupCacheItem.PokemonLookup.Form = lookupForm(pokemon.Form)

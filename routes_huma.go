@@ -21,7 +21,7 @@ type pokemonV2ScanInput struct {
 }
 
 type pokemonV2ScanOutput struct {
-	Body []decoder.ApiPokemonResult
+	Body []decoder.ApiPokemonResultV2
 }
 
 type pokemonV3ScanInput struct {

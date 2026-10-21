@@ -1,6 +1,7 @@
 package decoder
 
 import (
+	"golbat/config"
 	"time"
 
 	"github.com/UnownHash/gohbem"
@@ -23,14 +24,10 @@ type ApiPvpEntry struct {
 // ApiPvpRankings holds the PVP rankings per league.
 //
 // The league fields use omitempty so a league with no ranking is dropped from
-// the JSON. This matches the historical wire format, which emitted a dynamic
-// map[string][]gohbem.PokemonEntry from QueryPvPRank that only included a league
-// key when that league had entries. So a pokemon ranked only in Great serializes
-// as `"pvp":{"great":[...]}` and a pokemon with no rankings as `"pvp":{}`. Using
-// a fixed struct (rather than a map) keeps a stable, documentable OpenAPI schema
-// that still lists all three leagues. (The only difference from the old map is the
-// fully-disabled case: the map was `"pvp":null` when ohbem was nil, where this
-// emits `"pvp":{}`.)
+// the JSON: a pokemon ranked only in Great serializes as
+// `"pvp":{"great":[...]}`, and one with no rankings, or with ohbem disabled,
+// as `"pvp":{}`. A fixed struct (rather than a map) keeps a stable,
+// documentable OpenAPI schema that still lists all three leagues.
 type ApiPvpRankings struct {
 	Little []ApiPvpEntry `json:"little,omitempty" doc:"PVP rankings for the Little league (CP cap 500)"`
 	Great  []ApiPvpEntry `json:"great,omitempty" doc:"PVP rankings for the Great league (CP cap 1500)"`
@@ -58,8 +55,8 @@ type ApiPvpRankings struct {
 // that describes all four honestly, and the JSON is unaffected either way: an
 // integer renders the same regardless of the surrounding Go type's width.
 //
-// Widening the Go type is what drops the `minimum: 0` huma used to infer from
-// uint32, so all four carry an explicit `minimum:"0"` tag instead. The bound
+// huma infers `minimum: 0` only from an unsigned type, so all four carry an
+// explicit `minimum:"0"` tag instead. The bound
 // is real — every one of them is backed by an unsigned column — and losing it
 // was a side effect of the widening rather than part of the point, so the tag
 // puts it back and gets first_seen_timestamp and changed a floor they never
@@ -166,10 +163,13 @@ func buildApiPokemonResult(pokemon *Pokemon) ApiPokemonResult {
 }
 
 // buildApiPvpRankings queries ohbem for PVP rankings. Returns a zero value when
-// PVP is disabled (no ohbem instance) or on query error.
+// PVP is disabled or on query error.
+//
+// Both conditions are checked: ohbem is also built for CP whenever derivation
+// is on, so a non-nil instance does not mean PVP was asked for.
 func buildApiPvpRankings(pokemon *Pokemon) ApiPvpRankings {
 	o := ohbem.Load()
-	if o == nil {
+	if o == nil || !config.Config.Pvp.Enabled {
 		return ApiPvpRankings{}
 	}
 	pvp, err := o.QueryPvPRank(int(pokemon.PokemonId),
@@ -203,11 +203,33 @@ type ApiPokemonScanResultV3 struct {
 	LimitReached bool               `json:"limit_reached" doc:"Whether the pre-filtered result list reached the effective result limit"`
 }
 
+// ApiPokemonResultV2 is a v2 scan result: the shared result, plus the
+// requesting player's readings when the request sets annotate_player. The
+// player fields are v2-only, so they live here rather than on
+// ApiPokemonResult, which the gRPC Pokemon message mirrors field for field.
+type ApiPokemonResultV2 struct {
+	ApiPokemonResult
+	PlayerShiny      bool           `json:"player_shiny,omitempty" doc:"Shiny for shiny_player_id at the species' rate from roll_rates/default_shiny_odds (a known Ditto: the Ditto rule). Absent when not, or when the rate is unknown."`
+	PlayerBackground bool           `json:"player_background,omitempty" doc:"Offers shiny_player_id a background at the species' roll_rates rate. Absent when not."`
+	PlayerSize       *ApiPlayerSize `json:"player_size,omitempty" doc:"Height, weight and Biggest Showcase score shiny_player_id is shown. Absent for a Ditto, Pumpkaboo, Gourgeist, Minior, a strong pokemon, without known IVs or masterfile size data, or when the derivation does not match the record."`
+}
+
 // GetPokemonInArea2Clean runs the v2 rtree/DNF search and returns a bare array of
-// ApiPokemonResult, discarding the candidate counts (matching the v2 shape).
-func GetPokemonInArea2Clean(req ApiPokemonScan2) []ApiPokemonResult {
-	keys, _, _, _ := internalGetPokemonInArea2(req)
-	return collectApiPokemonResults(keys, "API.ScanPokemon.v2.clean", 0)
+// results, discarding the candidate counts (matching the v2 shape), annotated
+// for the request's player when it sets annotate_player.
+func GetPokemonInArea2Clean(req ApiPokemonScan2) []ApiPokemonResultV2 {
+	personal := req.personalScan()
+	keys, _, _, _ := internalGetPokemonInArea2With(req, personal)
+	annotate := req.AnnotatePlayer && personal.player != nil
+	results := make([]ApiPokemonResultV2, 0, len(keys))
+	forEachLivePokemonResult(keys, "API.ScanPokemon.v2.clean", 0, func(_ uint64, r *ApiPokemonResult) {
+		result := ApiPokemonResultV2{ApiPokemonResult: *r}
+		if annotate {
+			personal.annotate(&result)
+		}
+		results = append(results, result)
+	})
+	return results
 }
 
 // GetPokemonInArea3Clean runs the v3 rtree/DNF search and returns the matched
