@@ -159,3 +159,25 @@ func TestMiniorSightingIsNotDerived(t *testing.T) {
 		t.Fatalf("Minior was derived: %+v", p.PokemonData)
 	}
 }
+
+// A record that changes species into a Minior drops the IVs and level the
+// previous species had: neither derivation nor a weather flip replaces them
+// for Minior, so they would be published as the Minior's.
+func TestSpeciesChangeToMiniorDropsStats(t *testing.T) {
+	p := &Pokemon{PokemonData: PokemonData{
+		Id: 977402, PokemonId: 25, Form: null.ValueFrom(uint16(0)),
+		Gender: null.ValueFrom(uint8(1)), Costume: null.ValueFrom(uint8(0)),
+		IsStrong: null.ValueFrom(false), SeenType: SeenTypeFrom(SeenTypeCodeWild),
+		Weather: null.ValueFrom(uint8(0)),
+		AtkIv:   null.ValueFrom(uint8(15)), DefIv: null.ValueFrom(uint8(15)),
+		StaIv: null.ValueFrom(uint8(15)), Iv: null.ValueFrom(float32(100)),
+		Level: null.ValueFrom(uint8(30)), Cp: null.ValueFrom(uint16(500)),
+	}}
+	p.snapshotOldValues()
+	p.setPokemonDisplay(int16(pogo.HoloPokemonId_MINIOR),
+		&pogo.PokemonDisplayProto{Form: pogo.PokemonDisplayProto_MINIOR_BLUE, Gender: 3}, SeenTypeCodeWild)
+	assertMiniorStatsUnset(t, p)
+	if p.PokemonId != int16(pogo.HoloPokemonId_MINIOR) {
+		t.Fatalf("species is %d, want Minior", p.PokemonId)
+	}
+}
