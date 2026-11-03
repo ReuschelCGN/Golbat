@@ -10,8 +10,8 @@ import (
 )
 
 type ApiPokemonDnfId struct {
-	Pokemon int16  `json:"id" doc:"Pokedex id to match; 0 matches any pokemon. Required within a pokemon entry — a form without an id can never match."`
-	Form    *int16 `json:"form" required:"false" doc:"Form id to match; null matches any form of the given id."`
+	Pokemon int16  `json:"id" doc:"Pokedex id; required within a pokemon entry. 0 with no form files the clause under 'everything else'; 0 with a form can never match, because forms belong to a species."`
+	Form    *int16 `json:"form" required:"false" doc:"Form id; null matches any form of the given id. For pokemon of that form, clauses listing the exact id+form take precedence over clauses listing the id alone."`
 }
 
 // ApiPokemonDnfMinMax is an inclusive integer range used by the filter clauses.
@@ -19,7 +19,7 @@ type ApiPokemonDnfId struct {
 // like IV simply use the low end of that range.
 type ApiPokemonDnfMinMax struct {
 	Min int16 `json:"min" required:"false" doc:"Minimum value (inclusive). An omitted bound defaults to 0."`
-	Max int16 `json:"max" required:"false" doc:"Maximum value (inclusive). An omitted bound defaults to 0, so a range with only min can never match — send both bounds."`
+	Max int16 `json:"max" required:"false" doc:"Maximum value (inclusive). An omitted or null max is unbounded (32767)."`
 }
 
 func contains(s []int8, e int8) bool {
