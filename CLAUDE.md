@@ -10,6 +10,11 @@ Golbat is a high-performance Go backend that receives raw protobuf data from Pok
 - **Test:** `go test ./decoder/` — the `decoder` package holds most logic and its `_test.go` files; `go test .` runs the root-package huma route tests. Some tests need the go-json build behavior: `go test -tags go_json ./...`.
 - **Lint:** `golangci-lint run` — CI enforces it (staticcheck included). Run it before pushing. Example: staticcheck `S1016` wants `ApiFoo(k)` conversion instead of a field-by-field literal when two structs have identical fields.
 
+## Docs
+
+- `api.md` — HTTP and gRPC API reference. Update it with any endpoint, request/response field or filter-semantics change.
+- `webhooks.md` — receiver-facing webhook spec (envelope, per-type firing conditions and payloads, accepted type strings). Update it with any webhook type, payload field or trigger change.
+
 ## Project Layout
 
 ```
@@ -18,7 +23,7 @@ routes.go            — HTTP route handlers (raw ingest, API endpoints)
 raw_limiter.go       — Bounded raw-processing concurrency (semaphore + shed)
 decode.go            — Proto method dispatcher, GMO decoder
 grpc_server_raw.go   — gRPC raw proto receiver
-grpc_server_api.go   — GolbatApi gRPC service (pokemon + fort scans) and newGrpcServer()
+grpc_server_api.go   — GolbatApi gRPC service (pokemon, fort, tappable) and newGrpcServer()
 grpc_auth.go         — api_secret unary interceptor for GolbatApi methods
 decoder/
   main.go            — Cache/queue initialization, raw data types
@@ -74,13 +79,15 @@ overload instead of unbounded goroutine pileup on internal locks.
 ### gRPC API
 
 The same listener also serves `GolbatApi` (`grpc/api.proto`): `ScanPokemon`,
-`GetPokemon`, `ScanGyms`, `ScanPokestops`, `ScanStations`, `ScanForts`. Each
+`GetPokemon`, `ScanGyms`, `ScanPokestops`, `ScanStations`, `ScanForts`,
+`ScanTappables`, `GetTappable`. Each
 request converts to the HTTP request struct (`decoder/api_grpc_*.go`) and runs
 the same scan code as the Huma endpoint; results mirror the `Api*Result`
 structs field for field (`decoder/api_grpc_parity_test.go` fails if either
 side gains a field the other lacks). Auth is `api_secret` via the
 `x-golbat-secret` metadata key (`grpc_auth.go`), never `raw_bearer`. Fort
-scans return `FailedPrecondition` without `fort_in_memory`. Server reflection
+scans return `FailedPrecondition` without `fort_in_memory`; tappable scans
+are not gated. Server reflection
 is registered so `grpcurl`/`ghz` work without proto files.
 
 ### Dispatch (`decode.go`)
@@ -148,7 +155,7 @@ type Pokestop struct {
 | Incident | string (incident ID) | TTL | string | string |
 | Weather | int64 (S2 cell ID) | TTL | — | int64 |
 | Route | string (route ID) | TTL | string | string |
-| Tappable | uint64 (encounter ID) | TTL | uint64 | uint64 |
+| Tappable | uint64 (encounter ID) | Otter (per-entry TTL) | uint64 | uint64 |
 
 ## Caching
 
@@ -166,11 +173,12 @@ Lower-contention entities (incident, weather, route, tappable, player, s2cell, d
 
 - **Fort caches**: jittered per-entry TTL (`fortCacheEntryTTL`): ~60–70 min normally, 25–27 h when `config.Config.FortInMemory` is enabled (keeps forts resident for R-tree operations). Jitter spreads a restart cohort's expiry so downstream work (tree deletes, tracker events, DB reloads) arrives as a stream, not a burst (with otter there is no reader-blocking sweep; jitter survives as burst smoothing).
 - **Pokemon cache**: per-entry TTL from `remainingDuration` with `DisableTouchOnHit = true` — verified despawns get despawn time + 60 s (clamped to 1 minute once at/past despawn), unverified get 55–65 min with per-pokemon jitter.
+- **Tappable cache**: per-entry TTL `expire_timestamp` + 60 s (1 min floor), 60 min without an expiry, no touch-on-hit (`tappableCacheTTL`); every save `Set`s it (re-caches a tappable evicted mid-save), including a clean DB-loaded one not yet indexed.
 - **All other caches**: 60-minute TTL (weather consensus: 2 hours).
 
 ### Eviction Callbacks and the Tree Writer
 
-Fort and pokemon caches register eviction callbacks that clean up the lookup-cache entry inline and hand the R-tree mutation to an ordered batching worker (`decoder/rtree_evictor.go`). Important facts about this path:
+Fort, pokemon and tappable caches register eviction callbacks that clean up the lookup-cache entry inline and hand the R-tree mutation to an ordered batching worker (`decoder/rtree_evictor.go`). Important facts about this path:
 
 - Eviction callbacks arrive on each cache's single dispatcher goroutine (see `ottercache/cache.go`) — bounded, but still NOT synchronized with cache operations or entity-lock holders. The pokemon callback therefore takes the entity lock and skips cleanup if the pokemon was re-cached; the fort callback skips when the lookup entry is already gone (deleted fort) or owned by a different fort type (pokestop↔gym conversion).
 - **All runtime pokemon tree mutations go through the writer** — new-record inserts, position moves (delete+insert pairs), rehydration inserts, the eviction-race self-heal, and eviction deletes. Savers holding entity locks never touch `pokemonTreeMutex` (production dumps once showed 90+ savers convoyed there); only the worker and the ~1/s scan-snapshot refresh acquire it. Enqueue order is apply order; deletes match on (coords, id) so stale duplicates are no-ops; the rtree is a multiset so duplicate inserts self-correct. Startup preload uses direct inserts (pre-traffic) to avoid flooding the queue. Fort tree: deletes are queued, adds remain direct (low churn).
@@ -294,6 +302,9 @@ Worker queue depths are exported every 10s as
 | `weather` | Weather | `weather` |
 | `fort_update` | FortUpdate | `fort_update` |
 | `max_battle` | MaxBattle | `max_battle` |
+| `tappable` | Tappable | `tappable` |
+
+`tappable` covers reward tappables only, sent when a reward type is first recorded (`rewardChanged`, set in `setRewards`); encounter tappables go out as `pokemon` webhooks. Payload follows the `pokemon` hook's field names (`webhooks.md`).
 
 ### Dispatch Flow
 
@@ -361,6 +372,15 @@ This separation means a scan of 100,000 pokemon in a bounding box only touches t
 - Lookup entry updated synchronously on every save via `updatePokemonLookup()` which also recalculates PVP rankings
 - Tree delete queued via cache eviction callback when pokemon TTL expires
 
+### Tappable R-tree (`tappableRtree.go`)
+
+**TappableLookup** (32 bytes, size-pinned) stores lat/lon, expiry (uint32), count, reward type (index into the 15 `LootItemProto` oneof names), item id, reward species and encounter species; `-1` = absent. Always on, no config flag.
+
+- All runtime tree mutations go through `tappableTreeEvictor` (savers never take `tappableTreeMutex`); preload inserts directly.
+- Eviction callback takes the entity lock, skips a re-cached tappable, else drops the lookup and `TryEnqueue`s the tree delete.
+- `POST /api/tappable/scan`: bbox + DNF clauses over `reward_type` (names; unknown → 400), `item_id`, `reward_pokemon_id`, `pokemon_id` (negative ids → 400), `count` range (first loot item); expired tappables are skipped; limit clamped by `tuning.max_tappable_results` (default 9000, reported in `/api/status`).
+- `GET /api/tappable/available`: maintained max-expiry index (`decoder/tappable_availability.go`, same helpers as fort availability) of live `(reward_type, item_id, reward_pokemon_id)` options and encounter species, observed on every index update and preload; no-expiry tappables count for 60 min. HTTP only (GolbatApi has no availability RPCs). `features.tappable_scan` in `/api/status`.
+
 ### Fort R-tree (`fortRtree.go`)
 
 **FortLookup** stores a union of fields across all fort types: type indicator, location, power-up level, AR eligibility, plus type-specific fields:
@@ -387,14 +407,14 @@ Three API versions exist (V1/V2/V3), all following the same pattern:
 5. Collect matching IDs up to a configurable limit
 6. For matched IDs, call `peekPokemonRecordReadOnly()` to lock and build full API results. The optional `updated_after` request field is applied here, on the locked record (`forEachLivePokemonResult`), never in the tree walk: it costs no lookup-cache bytes, and in exchange `examined`/`skipped`/`limit_reached` describe the pre-gate set. The fort collectors (`collect*Results`) apply the same gate.
 
-**DNF (Disjunctive Normal Form) Filters**: An array of filter clauses OR'd together. Each clause has AND'd conditions (IV range, level range, CP range, pokemon ID + form, PVP ranking, gender, size). A pokemon matches if ANY clause fully matches.
+**DNF filters: precedence, not a flat OR.** Clauses are grouped by the pokemon/form keys they list (`{pokemonId, form}`; no pokemon list = the "everything else" group at `{-1, -1}`). A pokemon is matched against the most specific group that exists for it:
+1. Exact `{pokemonId, form}`
+2. Species with any form: `{pokemonId, -1}`
+3. Everything else: `{-1, -1}`
 
-**Filter lookup optimization**: Filters are pre-indexed by `{pokemonId, form}` key. For each pokemon, the system tries:
-1. Exact `{pokemonId, form}` match
-2. Wildcard form: `{pokemonId, -1}`
-3. Global catch-all: `{-1, -1}`
+Within that group a clause matches if all its conditions hold (OR of ANDs). A less specific group never applies to a pokemon that has a more specific one: the generic group means *everything else*, which is what lets a client hide or restrict a species without enumerating the complement; a client that wants a shared clause to also apply to such a species lists it under that key too (ReactMap does). This was designed in with the DNF API (#134) and is pinned by `api_pokemon_semantics_test.go`; #414/#416 read it as a bug and were reverted — see #417 and the "Filter semantics" section of `api.md`. **Never merge groups server-side**: copying generic clauses into species buckets is O(species × generic clauses) per request before any scanning happens. Fort filters are the other model: a plain OR over every clause.
 
-This avoids iterating all filters for every pokemon.
+The grouping is also the performance lever: a candidate costs at most three map probes and evaluates only the applicable clauses, however many per-species rules the request carries.
 
 #### Fort Scan
 
@@ -457,5 +477,6 @@ On startup, `Preload()` bulk-loads entities from the database into caches. Order
 3. Stations → populates cache + fort R-tree
 4. Incidents → **must load after pokestops** because `updatePokestopIncidentLookup` needs existing fort R-tree entries
 5. Pokemon → populates cache + pokemon R-tree
+6. Tappables (Phase 1, parallel with forts) → unexpired rows only, cache + tappable R-tree
 
 Fort tracker is initialized from the preloaded fort data.
