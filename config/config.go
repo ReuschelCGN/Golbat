@@ -37,6 +37,12 @@ type configDefinition struct {
 	// stock behaviour for those fields; despawn-time derivation is separate
 	// and unaffected.
 	DeriveIv bool `koanf:"derive_iv"`
+	// DeriveStrong: with DeriveIv on, also derive strong (mighty) Pokemon's
+	// IVs, level, size and moves, whose walk differs from an ordinary
+	// encounter's (encounter.ForStrong). Default true. Off
+	// leaves a strong Pokemon's values absent until a real encounter, as
+	// before; checkDerivation still scores the walk either way.
+	DeriveStrong bool `koanf:"derive_strong"`
 	// DeriveDespawn: give a pokemon or tappable at a spawnpoint with no
 	// observed despawn second an unverified expiry derived from its spawn id,
 	// instead of the 20-minute guess. Default true; it exists to switch the
@@ -171,7 +177,7 @@ type tuning struct {
 	MaxConcurrentProactiveIVSwitch int     `koanf:"max_concurrent_proactive_iv_switch"`
 	ReduceUpdates                  bool    `koanf:"reduce_updates"`
 	WriteBehindStartupDelay        int     `koanf:"write_behind_startup_delay"`  // seconds, default: 120
-	WriteBehindWorkerCount         int     `koanf:"write_behind_worker_count"`   // concurrent writers, default: 50
+	WriteBehindWorkerCount         int     `koanf:"write_behind_worker_count"`   // concurrent writers, default: 16
 	WriteBehindBatchSize           int     `koanf:"write_behind_batch_size"`     // entries per batch, default: 50
 	WriteBehindBatchTimeoutMs      int     `koanf:"write_behind_batch_timeout"`  // max wait for batch in ms, default: 100
 	S2CellLookup                   bool    `koanf:"s2_cell_lookup"`              // Pre-compute S2 cell lookup for faster geofence matching. Trades memory (~60x geofence file size) for ~7x faster lookups, default: false
