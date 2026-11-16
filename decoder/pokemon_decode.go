@@ -364,7 +364,6 @@ func (pokemon *Pokemon) updateFromMap(ctx context.Context, db db.DbDetails, mapP
 			pokemon.applySightingDerivation()
 			pokemon.recomputeCpIfNeeded(ctx, db, weather)
 			// The mapPokemon and nearbyPokemon GMOs don't contain actual shininess.
-			// shiny = mapPokemon.pokemonDisplay.shiny
 		} else {
 			log.Warnf("[POKEMON] MapPokemonProto missing PokemonDisplay for %d", pokemon.Id)
 		}
@@ -566,10 +565,11 @@ func (pokemon *Pokemon) applyDerivedMoves(v encounter.Draw) {
 // always advance the generator equally, but not when the boosted branch's
 // nextInt(12) hits Java's rejection path.
 func (pokemon *Pokemon) deriveSizeAndMovesIfAbsent() {
-	if !config.Config.DeriveIv || pokemon.IsStrong.ValueOrZero() || hasPlayerSpecificStats(pokemon.PokemonId) {
+	strong := pokemon.IsStrong.ValueOrZero()
+	if !config.Config.DeriveIv || !deriveStrongAllowed(strong) || hasPlayerSpecificStats(pokemon.PokemonId) {
 		return
 	}
-	v := encounter.For(uint64(pokemon.Id), pokemon.statsBoosted(), int32(int64OrZero(pokemon.Form)))
+	v := encounter.Derive(uint64(pokemon.Id), pokemon.statsBoosted(), strong, int32(int64OrZero(pokemon.Form)))
 	if !pokemon.Size.Valid {
 		pokemon.SetSize(null.IntFrom(int64(v.Size)))
 	}
@@ -1850,12 +1850,8 @@ func (pokemon *Pokemon) downgradeEncounterSeenType() {
 // judge coverage and decide what still needs scanning. See
 // TestDeriveIvLeavesSeenTypeAlone.
 //
-// Strong Pokemon are skipped: the ordinary boosted-floor mechanic this
-// function models does not apply to them (see repopulateIv's
-// isBoostedMatches || isStrong branch and detectDitto's CompressedIv
-// invariant across boost states for a strong scan), so deriving for one would
-// write IVs indistinguishable from real ones but wrong. See
-// TestDeriveIvIfAbsentSkipsStrongPokemon.
+// Strong Pokemon are derived with their own walk (encounter.ForStrong), and
+// only while derive_strong is on. See TestDeriveIvIfAbsentDerivesStrongPokemon.
 //
 // A known Ditto is derived on its own boost rule rather than its disguise's
 // (statsBoosted). See TestDeriveIvIfAbsentDerivesAKnownDittoOnItsOwnBranch.
@@ -1866,11 +1862,11 @@ func (pokemon *Pokemon) deriveIvIfAbsent() {
 	if !config.Config.DeriveIv {
 		return
 	}
-	if pokemon.IsStrong.ValueOrZero() {
+	strong := pokemon.IsStrong.ValueOrZero()
+	if !deriveStrongAllowed(strong) {
 		return
 	}
-	// A player-specific species has no spawn-level stats to derive. See
-	// TestDeriveSkipsMinior.
+	// A player-specific species has no spawn-level stats to derive.
 	if hasPlayerSpecificStats(pokemon.PokemonId) {
 		return
 	}
@@ -1886,8 +1882,15 @@ func (pokemon *Pokemon) deriveIvIfAbsent() {
 		return
 	}
 
-	v := encounter.For(uint64(pokemon.Id), pokemon.statsBoosted(), int32(int64OrZero(pokemon.Form)))
+	v := encounter.Derive(uint64(pokemon.Id), pokemon.statsBoosted(), strong, int32(int64OrZero(pokemon.Form)))
 	pokemon.applyDerivedValues(v)
+}
+
+// deriveStrongAllowed reports whether a record may be derived given whether
+// it is strong: an ordinary one always, a strong one only with derive_strong
+// on. derive_iv is checked separately.
+func deriveStrongAllowed(strong bool) bool {
+	return !strong || config.Config.DeriveStrong
 }
 
 // statsBoosted is the boost branch the record's own stats follow, read from
@@ -1969,15 +1972,20 @@ func (pokemon *Pokemon) cpInputs() cpInputs {
 }
 
 // hasPlayerSpecificStats reports whether a species' encounter stats belong to
-// the player rather than the shared spawn. Minior's do: its IVs, level, CP,
-// moves and size are neither observed onto the record nor derived for it.
+// the player rather than the shared spawn. For such a species, IVs, level, CP,
+// moves and size are neither observed onto the record nor derived for it, and
+// a spawn whose display changes to it drops the previous species' stats.
+//
+// No species currently qualifies. Minior is the prior example (#426); to
+// suppress a species again, return true for its id here.
 func hasPlayerSpecificStats(pokemonId int16) bool {
-	return pokemonId == int16(pogo.HoloPokemonId_MINIOR)
+	return false
 }
 
 // caller should setPokemonDisplay prior to calling this
 func (pokemon *Pokemon) addEncounterPokemon(ctx context.Context, db db.DbDetails, proto *pogo.PokemonProto, username string) {
-	// Minior's encounter stats belong to the player, not the shared spawn.
+	// A player-specific species' encounter stats belong to the player, not
+	// the shared spawn, so none of them are recorded.
 	if hasPlayerSpecificStats(pokemon.PokemonId) {
 		pokemon.setUsernameIfStored(username)
 		return
@@ -2320,9 +2328,10 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 			}
 			// IVs and level otherwise survive a display change, so a spawn
 			// first seen (and derived or encountered) as another species that
-			// now displays as Minior would keep that identity's stats, and
-			// have a Minior CP recomputed from them. Minior's stats are the
-			// player's, so they are dropped rather than carried over.
+			// now displays as a player-specific one would keep that identity's
+			// stats, and have a CP recomputed from them for the new species.
+			// Player-specific stats are the player's, so they are dropped
+			// rather than carried over.
 			if hasPlayerSpecificStats(pokemonId) {
 				pokemon.clearIv(true)
 				pokemon.SetLevel(null.NewInt(0, false))
@@ -2365,8 +2374,8 @@ func (pokemon *Pokemon) setPokemonDisplay(pokemonId int16, display *pogo.Pokemon
 }
 
 func (pokemon *Pokemon) repopulateIv(weather int64, isStrong bool) {
-	// Do not restore player-specific Minior stats from an earlier encounter,
-	// nor derive them for the new weather.
+	// Do not restore a player-specific species' stats from an earlier
+	// encounter, nor derive them for the new weather.
 	if hasPlayerSpecificStats(pokemon.PokemonId) {
 		return
 	}
@@ -2407,18 +2416,15 @@ func (pokemon *Pokemon) repopulateIv(weather int64, isStrong bool) {
 	// not move with weather, so the other state's scan IS its scan.
 	usableScan := matchingScan != nil && (isBoostedMatches || isStrong)
 	var oldAtk, oldDef, oldSta int64
-	if !usableScan && config.Config.DeriveIv && !isStrong {
+	if !usableScan && config.Config.DeriveIv && deriveStrongAllowed(isStrong) {
 		// Derive for the state actually being asked about — the encounter id
 		// is unchanged and isBoosted above already accounts for Ditto.
 		//
-		// Strong Pokemon are excluded: a strong Pokemon's IVs are unaffected
-		// by weather (see the isBoostedMatches || isStrong branch below, and
-		// detectDitto's identical CompressedIv requirement across boost states
-		// for a strong scan), so the ordinary boosted-floor derivation in
-		// encounter.For would write IVs that cannot occur for one. Whether a
-		// strong Pokemon's true values are the unboosted derivation with the
-		// level shift applied separately is an open question. Until it is
-		// answered, no data beats wrong data.
+		// isStrong, not the stored flag, picks the walk: this sighting may be
+		// the one that turns the record strong or ordinary, and the stored
+		// flag is updated only after this returns. A strong record reaches
+		// here only with no scan of either boost state, since a strong scan
+		// of the other state is usable (its IVs do not move with weather).
 		//
 		// derive_iv gates the branch rather than only applyDerivedValues:
 		// with derivation off that call writes nothing, and this arm would
@@ -2427,7 +2433,7 @@ func (pokemon *Pokemon) repopulateIv(weather int64, isStrong bool) {
 		//
 		// The encounter's stats no longer stand, so an encounter record goes
 		// back to wild, as it does when the stats are cleared.
-		v := encounter.For(uint64(pokemon.Id), isBoosted, int32(int64OrZero(pokemon.Form)))
+		v := encounter.Derive(uint64(pokemon.Id), isBoosted, isStrong, int32(int64OrZero(pokemon.Form)))
 		pokemon.applyDerivedValues(v)
 		pokemon.downgradeEncounterSeenType()
 		pokemon.SetCp(null.NewInt(0, false))
