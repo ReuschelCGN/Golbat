@@ -1582,6 +1582,8 @@ Scan requests also accept `{"latitude": .., "longitude": ..}`.
   `0`; they are kept for wire compatibility and never populated.
 - `pvp` is computed per request: one list per league (`little`, `great`,
   `ultra`) that has a ranking, `{}` when PVP is disabled or there is none.
+  Entries mean the same as in the webhook's `pvp` (`webhooks.md`, "pvp
+  structure"), including the Mega and battle-only form entries.
 
 ### ApiPokestopResult
 
@@ -1910,6 +1912,21 @@ encounters (September 2026) resolved 6 Dittos, largest roll 0.0171, and 56
 non-Dittos of pool species, smallest roll 0.0353. The exact cutoff between
 0.0199940 and 0.02 has not been observed, and neither has the game's rate
 during a Ditto event.
+
+### Minior core colour
+
+A wild Minior shows `MINIOR_METEOR` and turns into a core colour when
+caught. With `derive_iv` on, the colour is picked from the first
+`nextFloat()` of `java.util.Random` seeded with the encounter id (no xor),
+walked cumulatively over a hard-coded table (green 5%, then yellow 95%;
+`miniorCores` in `decoder/minior.go`). `form` is the core colour,
+`display_pokemon_id`/`display_pokemon_form` are Minior/`MINIOR_METEOR`.
+CP uses the core form's base stats, as the game does for the encounter and the
+caught Pokemon. PvP ranks the core form, plus `MINIOR_METEOR` (3380) entries at
+the level and CP Minior fights at, since a caught Minior enters battle as
+Meteor (`webhooks.md`, "Battle-only forms"). Golbat never sees a catch, so the
+colour is not validated; an event with other colours or weights needs a code
+change.
 
 ### What is not derived, and why
 
